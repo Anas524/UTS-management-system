@@ -12,7 +12,7 @@
 
   <tr>
     <td><strong>Beginning Balance:</strong></td>
-    <td>{{ is_null($begin) ? '-' : number_format($begin,2) }}</td>
+    <td>{{ is_null($begin) ? '-' : number_format($begin,2,',','.') }}</td>
   </tr>
   <tr><td>&nbsp;</td></tr>
 
@@ -45,23 +45,23 @@
   <tr><td colspan="8">&nbsp;</td></tr>
   <tr>
     <td colspan="4" align="right"><strong>Total</strong></td>
-    <td>{{ number_format($totalDebit,2) }}</td>
-    <td>{{ number_format($totalCredit,2) }}</td>
-    <td>{{ number_format($totalAmount,2) }}</td>
+    <td>{{ number_format($totalDebit,2,',','.') }}</td>
+    <td>{{ number_format($totalCredit,2,',','.') }}</td>
+    <td>{{ number_format($totalAmount,2,',','.') }}</td>
     <td></td>
   </tr>
 
   <tr><td colspan="8">&nbsp;</td></tr>
   <tr>
     <td><strong>Beginning Balance</strong></td>
-    <td>{{ is_null($begin) ? '-' : number_format($begin,2) }}</td>
+    <td>{{ is_null($begin) ? '-' : number_format($begin,2,',','.') }}</td>
   </tr>
   <tr>
     <td><strong>Mutation</strong></td>
-    <td>{{ number_format($mutation,2) }}</td>
+    <td>{{ number_format($mutation,2,',','.') }}</td>
   </tr>
   <tr>
     <td><strong>Ending Balance</strong></td>
-    <td>{{ is_null($ending) ? '-' : number_format($ending,2) }}</td>
+    <td>{{ is_null($ending) ? '-' : number_format($ending,2,',','.') }}</td>
   </tr>
 </table>

@@ -21,9 +21,9 @@ class ExpenseRow extends Model
 
     protected $casts = [
         'date'   => 'date',      // <-- makes $r->date a Carbon instance
-        'debit'  => 'decimal:2', // optional, keeps numbers tidy
-        'credit' => 'decimal:2',
-        'amount' => 'decimal:2',
+        'debit'  => 'decimal:0',  // or 'integer'
+        'credit' => 'decimal:0',
+        'amount' => 'decimal:0',
     ];
 
     public function sheet(): BelongsTo

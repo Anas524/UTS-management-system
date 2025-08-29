@@ -29,7 +29,7 @@ Route::middleware(['auth', 'admin'])->prefix('admin')->as('admin.')->group(funct
     Route::patch('/users/{user}/role', [AdminController::class, 'updateRole'])->name('users.role');
 });
 
-Route::middleware('auth')->group(function () {
+Route::middleware('auth')->scopeBindings()->group(function () {
     Route::get('/expenses', [ExpenseSheetController::class, 'index'])->name('expenses.index');
     Route::post('/expenses', [ExpenseSheetController::class, 'store'])->name('expenses.store');
     Route::get('/expenses/{sheet}', [ExpenseSheetController::class, 'show'])->name('expenses.show');

@@ -29,13 +29,26 @@
 
         <div class="sheet-meta">
             <div>Beginning Balance:
-                <strong>{{ is_null($begin) ? '–' : number_format($begin,2) }}</strong>
+                <strong>{{ is_null($begin) ? '–' : 'IDR '.number_format($begin,0,',','.') }}</strong>
                 <button class="mini-link" data-modal-open="#modalBegin">Set</button>
             </div>
         </div>
 
         <div class="sheet-toolbar">
             <button class="sheet-btn sheet-btn-primary" data-modal-open="#modalAddRow">+ Add Row</button>
+
+            <form method="GET" action="{{ route('expenses.show', $sheet) }}" class="sort-select modern-sort" id="sortForm">
+                <input type="hidden" name="order" id="orderInput" value="{{ $order }}">
+                <div class="sort-dropdown" id="sortDropdown">
+                    <button type="button" class="sort-trigger" id="sortTrigger" aria-haspopup="listbox" aria-expanded="false">
+                        <span id="sortLabel">{{ $order === 'desc' ? 'Newest first' : 'Oldest first' }}</span>
+                    </button>
+                    <ul class="sort-menu" role="listbox" aria-labelledby="sortTrigger">
+                        <li role="option" data-value="desc" class="sort-option {{ $order==='desc' ? 'is-active' : '' }}">Newest first</li>
+                        <li role="option" data-value="asc" class="sort-option {{ $order==='asc'  ? 'is-active' : '' }}">Oldest first</li>
+                    </ul>
+                </div>
+            </form>
         </div>
 
         <div class="sheet-table-wrap">
@@ -69,13 +82,13 @@
                             <input type="text" name="doc_number" value="{{ $r->doc_number }}">
                         </td>
                         <td class="right">
-                            <input type="number" step="0.01" name="debit" value="{{ $r->debit }}">
+                            <input type="text" name="debit" class="currency-input" value="{{ is_null($r->debit) ? '' : 'IDR '.number_format($r->debit,0,',','.') }}">
                         </td>
                         <td class="right">
-                            <input type="number" step="0.01" name="credit" value="{{ $r->credit }}">
+                            <input type="text" name="credit" class="currency-input" value="{{ is_null($r->credit) ? '' : 'IDR '.number_format($r->credit,0,',','.') }}">
                         </td>
                         <td class="right">
-                            <input type="number" step="0.01" name="amount" value="{{ $r->amount }}">
+                            <input type="text" name="amount" class="currency-input" value="{{ is_null($r->amount) ? '' : 'IDR '.number_format($r->amount,0,',','.') }}">
                         </td>
                         <td>
                             <input type="text" name="remarks" value="{{ $r->remarks }}">
@@ -120,6 +133,21 @@
                                     </svg>
                                 </button>
 
+                                {{-- View attachments button (eye icon) opens files sequentially --}}
+                                @php
+                                $viewUrls = $r->attachments->map(fn($a) => route('attachments.view', $a))->values();
+                                @endphp
+                                <button type="button"
+                                    class="icon-btn icon-view js-open-attachments"
+                                    data-urls='@json($viewUrls)'
+                                    title="View attachments"
+                                    aria-label="View attachments">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                        <circle cx="12" cy="12" r="3" />
+                                    </svg>
+                                </button>
+
                                 {{-- Panel --}}
                                 <div id="attach-{{ $r->id }}" class="attach-panel">
                                     <div class="attach-head">
@@ -137,7 +165,7 @@
                                         @forelse($r->attachments as $a)
                                         <li>
                                             <a href="{{ route('attachments.view', $a) }}" target="_blank" class="attach-name">{{ $a->original_name }}</a>
-                                            <span class="attach-size">{{ number_format($a->size/1024,1) }} KB</span>
+                                            <span class="attach-size">{{ number_format($a->size/1024,1,',','.') }} KB</span>
 
                                             <a href="{{ route('attachments.download', $a) }}" class="attach-btnmini" title="Download original">Download</a>
 
@@ -173,9 +201,9 @@
                 <tfoot>
                     <tr>
                         <th colspan="4" class="right">Total</th>
-                        <th class="right">{{ number_format($totalDebit,2) }}</th>
-                        <th class="right">{{ number_format($totalCredit,2) }}</th>
-                        <th class="right">{{ number_format($totalAmount,2) }}</th>
+                        <th class="right">IDR {{ number_format($totalDebit,0,',','.') }}</th>
+                        <th class="right">IDR {{ number_format($totalCredit,0,',','.') }}</th>
+                        <th class="right">IDR {{ number_format($totalAmount,0,',','.') }}</th>
                         <th></th>
                         <th></th>
                     </tr>
@@ -186,15 +214,15 @@
         <div class="sheet-summary">
             <div class="sum-item">
                 <div class="sum-label">Beginning Balance</div>
-                <div class="sum-value">{{ is_null($begin) ? '–' : number_format($begin,2) }}</div>
+                <div class="sum-value">{{ is_null($begin) ? '–' : 'IDR '.number_format($begin,0,',','.') }}</div>
             </div>
             <div class="sum-item">
                 <div class="sum-label">Mutation</div>
-                <div class="sum-value">0.00</div>
+                <div class="sum-value">IDR {{ number_format($mutation,0,',','.') }}</div>
             </div>
             <div class="sum-item">
                 <div class="sum-label">Ending Balance</div>
-                <div class="sum-value">0.00</div>
+                <div class="sum-value">{{ is_null($ending) ? '–' : 'IDR '.number_format($ending,0,',','.') }}</div>
             </div>
         </div>
 
@@ -213,7 +241,7 @@
             @csrf @method('PATCH')
             <div class="field-row">
                 <label>Beginning Balance</label>
-                <input type="number" step="0.01" name="beginning_balance" value="{{ $begin }}">
+                <input type="text" name="beginning_balance" class="currency-input" value="{{ is_null($begin) ? '' : 'IDR '.number_format($begin,0,',','.') }}">
             </div>
             <div class="modal-actions">
                 <button type="submit" class="sheet-btn sheet-btn-primary">Save</button>
@@ -339,9 +367,103 @@
             });
         }
 
+        // View attachments in a single popup with next/prev controls and zoom
+        $(document).on('click', '.js-open-attachments', function() {
+            var urls = $(this).attr('data-urls');
+            var $btn = $(this);
+
+            function showTip(msg) {
+                var $tip = $('<span class=\'no-attach-tip\'>' + msg + '</span>').appendTo('body');
+                var off = $btn.offset();
+                $tip.css({
+                    top: off.top - $tip.outerHeight() - 8,
+                    left: off.left + ($btn.outerWidth() - $tip.outerWidth()) / 2
+                }).fadeIn(200);
+                setTimeout(function() {
+                    $tip.fadeOut(200, function() {
+                        $(this).remove();
+                    });
+                }, 2000);
+            }
+
+            if (!urls) {
+                showTip('This row has no attachments');
+                return;
+            }
+            try {
+                urls = JSON.parse(urls);
+            } catch (e) {
+                urls = [];
+            }
+            if (!urls.length) {
+                showTip('This row has no attachments');
+                return;
+            }
+
+            var win = window.open('', '_blank');
+            if (!win) return;
+
+            var popupHtml = `<!DOCTYPE html>
+            <html>
+                <head>
+                <meta charset="utf-8">
+                <title>Attachments</title>
+                <style>
+                body{margin:0;display:flex;flex-direction:column;height:100vh;background:#f3f4f6;overflow:hidden;}
+                #viewer-wrap{flex:1;width:100%;background:#fff;display:flex;justify-content:center;align-items:center;overflow:hidden;}
+                #viewer{width:100%;height:100%;border:0;transform-origin:0 0;}
+                .controls{display:flex;justify-content:center;align-items:center;gap:12px;padding:10px;background:#fff;box-shadow:0 -1px 3px rgba(0,0,0,.1);}
+                .controls button{background:none;border:0;padding:4px;cursor:pointer;}
+                .controls button:disabled{opacity:.3;cursor:default;}
+                .controls svg{width:24px;height:24px;stroke:#2563eb;stroke-width:2;fill:none;}
+                </style>
+                </head>
+            <body>
+                <div id="viewer-wrap"><iframe id="viewer"></iframe></div>
+                <div class="controls">
+                    <button id="prevBtn" title="Previous"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" /></svg></button>
+                    <button id="zoomOut" title="Zoom out"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="M8 11h6" /><path d="M21 21l-4.35-4.35" /></svg></button>
+                    <span id="counter"></span>
+                    <button id="zoomIn" title="Zoom in"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="M8 11h6" /><path d="M11 8v6" /><path d="M21 21l-4.35-4.35" /></svg></button>
+                    <button id="nextBtn" title="Next"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg></button>
+                    </div>
+                <script>
+                    var urls = ${JSON.stringify(urls)};
+                    var idx = 0;
+                    var iframe = document.getElementById('viewer');
+                    var counter = document.getElementById('counter');
+                    var prevBtn = document.getElementById('prevBtn');
+                    var nextBtn = document.getElementById('nextBtn');
+                    var zoomIn = document.getElementById('zoomIn');
+                    var zoomOut = document.getElementById('zoomOut');
+                    var scale = 1;
+                    function applyZoom(){
+                    iframe.style.transform = 'scale('+scale+')';
+                    }
+                    function update(){
+                    iframe.src = urls[idx];
+                    counter.textContent = (idx+1)+' / '+urls.length;
+                    prevBtn.disabled = idx===0;
+                    nextBtn.disabled = idx===urls.length-1;
+                    }
+                    prevBtn.onclick = function(){ if(idx>0){idx--; update();} };
+                    nextBtn.onclick = function(){ if(idx<urls.length-1){idx++; update();} };
+                    zoomIn.onclick = function(){ if(scale<3){scale+=0.25; applyZoom();} };
+                    zoomOut.onclick = function(){ if(scale>0.5){scale-=0.25; applyZoom();} };
+                    update();
+                    applyZoom();
+                <\/script>
+            </body>
+            </html>`;
+            win.document.write(popupHtml);
+            win.document.close();
+        });
+
         // open/close and place centered within sheet-card
         $(document).on('click', '.js-attach-toggle', function() {
             var $panel = $($(this).data('target'));
+            var $others = $('.attach-panel.open').not($panel);
+            $others.removeClass('open').removeData('anchor');
             $panel.toggleClass('open');
 
             if ($panel.hasClass('open')) {
@@ -403,7 +525,9 @@
         });
 
         // Close on Esc
-        $(document).on('keydown', function (e) { if (e.key === 'Escape') closeConfirmModal(); });
+        $(document).on('keydown', function(e) {
+            if (e.key === 'Escape') closeConfirmModal();
+        });
 
         // Clicking backdrop / [data-modal-close] closes (you already have this logic)
         $(document).on('click', '#modalConfirm .modal-backdrop, #modalConfirm [data-modal-close]', closeConfirmModal);
@@ -418,6 +542,76 @@
             $('#modalConfirm').removeClass('open');
             document.body.style.overflow = '';
         }
+
+        // Currency formatting (IDR with commas)
+        function formatIDR(v) {
+            v = (v || '').toString().replace(/[^0-9.-]/g, '');
+            if (!v) return '';
+            var n = parseInt(v, 10);
+            if (isNaN(n)) return '';
+            return 'IDR ' + n.toLocaleString('id-ID');
+        }
+
+        $(document).on('blur', '.currency-input', function() {
+            $(this).val(formatIDR($(this).val()));
+        }).on('focus', '.currency-input', function() {
+            $(this).val($(this).val().replace(/IDR\s?/, '').replace(/\./g, ''));
+        });
+
+        $('form').on('submit', function() {
+            $(this).find('.currency-input').each(function() {
+                this.value = this.value.replace(/IDR\s?/, '').replace(/\./g, '');
+            });
+        });
+
+        var $dd = $('#sortDropdown');
+        var $trigger = $('#sortTrigger');
+        var $menu = $dd.find('.sort-menu');
+        var $label = $('#sortLabel');
+        var $input = $('#orderInput');
+        var $form = $('#sortForm');
+
+        function openDD() {
+            $dd.addClass('open');
+            $trigger.attr('aria-expanded', 'true');
+        }
+
+        function closeDD() {
+            $dd.removeClass('open');
+            $trigger.attr('aria-expanded', 'false');
+        }
+
+        // Toggle open/close
+        $trigger.on('click', function(e) {
+            e.stopPropagation();
+            $dd.hasClass('open') ? closeDD() : openDD();
+        });
+
+        // Select option
+        $menu.on('click', '.sort-option', function() {
+            var $opt = $(this);
+            $menu.find('.sort-option').removeClass('is-active');
+            $opt.addClass('is-active');
+
+            var val = $opt.data('value');
+            $label.text($.trim($opt.text()));
+            $input.val(val);
+
+            closeDD();
+            $form.trigger('submit'); // submit GET form
+        });
+
+        // Click outside closes
+        $(document).on('click', function(e) {
+            if (!$dd.is(e.target) && $dd.has(e.target).length === 0) {
+                closeDD();
+            }
+        });
+
+        // Esc closes
+        $(document).on('keydown', function(e) {
+            if (e.key === 'Escape') closeDD();
+        });
     });
 </script>
 @endpush

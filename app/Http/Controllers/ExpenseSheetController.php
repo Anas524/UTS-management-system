@@ -13,16 +13,47 @@ use App\Exports\ExpenseSheetExport;
 
 class ExpenseSheetController extends Controller
 {
+    /**
+     * For IDR-like inputs: keep only digits and optional leading minus.
+     * - "IDR 17.372" -> "17372"
+     * - "17,372"     -> "17372"
+     * - "" or "-"    -> null
+     */
+    private function normalizeRupiah(\Illuminate\Http\Request $request, array $fields): void
+    {
+        foreach ($fields as $f) {
+            if ($request->has($f)) {
+                $raw = (string) $request->input($f);
+
+                // keep digits and minus
+                $clean = preg_replace('/[^0-9\-]/', '', $raw);
+                // allow only leading minus
+                $clean = preg_replace('/(?!^)-/', '', $clean);
+
+                if ($clean === '' || $clean === '-') {
+                    $request->merge([$f => null]);
+                } else {
+                    // store as integer string (rupiah units)
+                    $request->merge([$f => (string) intval($clean)]);
+                }
+            }
+        }
+    }
+
     public function index(Request $request)
     {
-        $query = ExpenseSheet::query()->with('user')->latest();
+        $query = ExpenseSheet::query()->with('user');
 
         // Admin sees all, users see only their own
         if (!Auth::user()->is_admin) {
             $query->where('user_id', Auth::id());
         }
 
-        $sheets = $query->paginate(10);
+        // sort strictly by year then month (Jan → Dec)
+        $sheets = $query
+            ->orderBy('period_year', 'asc')
+            ->orderBy('period_month', 'asc')
+            ->paginate(10);
 
         return view('expenses.index', compact('sheets'));
     }
@@ -44,11 +75,17 @@ class ExpenseSheetController extends Controller
         return redirect()->route('expenses.show', $sheet);
     }
 
-    public function show(ExpenseSheet $sheet)
+    public function show(Request $request, ExpenseSheet $sheet)
     {
         $this->authorizeSheet($sheet);
 
-        $rows = $sheet->rows()->with('attachments')->get();
+        $order = $request->get('order', 'desc') === 'asc' ? 'asc' : 'desc';
+        // remove default "position" ordering from relation and sort by date/id
+        $rows = $sheet->rows()
+            ->with('attachments')
+            ->reorder('date', $order)
+            ->orderBy('id', $order)
+            ->get();
 
         $totalDebit  = (float) $rows->sum(fn($r) => (float) $r->debit);
         $totalCredit = (float) $rows->sum(fn($r) => (float) $r->credit);
@@ -58,12 +95,15 @@ class ExpenseSheetController extends Controller
         $begin    = $sheet->beginning_balance ?? null;
         $ending   = is_null($begin) ? null : ($begin + $mutation);
 
-        return view('expenses.show', compact('sheet', 'rows', 'totalDebit', 'totalCredit', 'totalAmount', 'mutation', 'begin', 'ending'));
+        return view('expenses.show', compact('sheet', 'rows', 'totalDebit', 'totalCredit', 'totalAmount', 'mutation', 'begin', 'ending', 'order'));
     }
 
     public function updateBeginning(Request $request, ExpenseSheet $sheet)
     {
         $this->authorizeSheet($sheet);
+
+        // sanatize first
+        $this->normalizeRupiah($request, ['beginning_balance']);
 
         $data = $request->validate([
             'beginning_balance' => 'nullable|numeric',
@@ -99,7 +139,11 @@ class ExpenseSheetController extends Controller
     public function updateRow(Request $request, ExpenseSheet $sheet, ExpenseRow $row)
     {
         $this->authorizeSheet($sheet);
-        abort_if($row->expense_sheet_id !== $sheet->id, 404);
+        // Re-resolve so it MUST belong to this sheet
+        $row = $sheet->rows()->whereKey($row->getKey())->firstOrFail();
+
+        // sanitize currency fields BEFORE validate
+        $this->normalizeRupiah($request, ['debit', 'credit', 'amount']);
 
         $data = $request->validate([
             'date'        => 'nullable|date',
@@ -111,13 +155,8 @@ class ExpenseSheetController extends Controller
             'remarks'     => 'nullable|string|max:255',
         ]);
 
-        // Normalize: turn empty strings into null (so clearing a field really clears it)
+        // Normalize: turn empty strings into null (for text fields only)
         foreach (['description', 'doc_number', 'remarks'] as $f) {
-            if ($request->has($f) && $request->input($f) === '') {
-                $data[$f] = null;
-            }
-        }
-        foreach (['debit', 'credit', 'amount'] as $f) {
             if ($request->has($f) && $request->input($f) === '') {
                 $data[$f] = null;
             }
@@ -131,7 +170,8 @@ class ExpenseSheetController extends Controller
     public function deleteRow(ExpenseSheet $sheet, ExpenseRow $row)
     {
         $this->authorizeSheet($sheet);
-        abort_if($row->expense_sheet_id !== $sheet->id, 404);
+        // Re-resolve so it MUST belong to this sheet
+        $row = $sheet->rows()->whereKey($row->getKey())->firstOrFail();
 
         $row->delete();
         return back()->with('status', 'Row removed.');

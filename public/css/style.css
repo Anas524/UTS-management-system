@@ -744,6 +744,7 @@ footer {
 
 .dash-btn-outline {
     background: #fff;
+    padding: 12px;
     color: var(--uts-blue);
     border: 2px solid var(--uts-gold);
 }
@@ -1112,6 +1113,43 @@ footer {
 
 .sheet-toolbar {
     margin: 8px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.sort-select {
+    position: relative;
+}
+
+.sort-select select {
+    padding: 6px 32px 6px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background-color: #fff;
+    font-size: 14px;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    cursor: pointer;
+}
+
+.sort-select::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #4b5563;
+    pointer-events: none;
+    transform: translateY(-50%);
+}
+
+.currency-input {
+    text-align: right;
 }
 
 /* Table */
@@ -1455,6 +1493,29 @@ footer {
     background: #f7f9fc;
 }
 
+/* eye (view attachments) button look */
+.icon-view {
+    border-color: #e5e7eb;
+    background: #fff;
+}
+
+.icon-view:hover {
+    background: #f7f9fc;
+}
+
+/* tooltip shown when no attachments are present */
+.no-attach-tip {
+    position: absolute;
+    background: #1f2937;
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+    display: none;
+    z-index: 10000;
+}
+
 /* Attachments popover panel */
 .attach-panel {
     position: fixed;
@@ -1753,7 +1814,106 @@ footer {
     filter: brightness(.95);
 }
 
-/* ensure the attachment panel stays below the confirm modal */
-.attach-panel {
-    z-index: 3000;
+/* container sits inline in the toolbar */
+.modern-sort {
+    display: inline-block;
+    vertical-align: middle;
+    margin-left: 8px;
+}
+
+/* trigger button */
+.sort-dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+.sort-trigger {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-width: 190px;
+    height: 38px;
+    padding: 0 14px;
+    background: #fff;
+    border: 1px solid var(--uts-blue);
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--uts-blue);
+    cursor: pointer;
+    transition: border-color .18s ease, box-shadow .18s ease, transform .06s ease, background .18s ease, color .18s ease;
+}
+
+.sort-trigger:hover {
+    background: var(--uts-blue);
+    color: #fff;
+}
+
+.sort-trigger:focus {
+    outline: none;
+    border-color: var(--uts-blue);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, .18);
+}
+
+.sort-trigger:active {
+    transform: translateY(1px);
+}
+
+/* arrow uses current text color */
+.sort-arrow {
+    margin-left: 8px;
+    pointer-events: none;
+}
+
+.sort-arrow path {
+    stroke: currentColor;
+    stroke-width: 2;
+    fill: none;
+}
+
+/* dropdown menu */
+.sort-menu {
+    position: absolute;
+    top: 44px;
+    left: 0;
+    right: 0;
+    z-index: 5000;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    box-shadow: 0 16px 40px rgba(2, 32, 71, .12);
+    padding: 6px;
+    margin: 0;
+    list-style: none;
+    display: none;
+}
+
+.sort-dropdown.open .sort-menu {
+    display: block;
+}
+
+.sort-option {
+    padding: 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #111827;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.sort-option:hover {
+    background: #f1f5f9;
+}
+
+/* SINGLE definitive active style */
+.sort-option.is-active {
+    background: var(--uts-blue);
+    color: #fff;
+}
+
+/* small screens */
+@media (max-width: 480px) {
+    .sort-trigger {
+        min-width: 160px;
+    }
 }
