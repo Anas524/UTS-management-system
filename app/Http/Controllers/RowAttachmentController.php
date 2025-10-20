@@ -18,7 +18,7 @@ class RowAttachmentController extends Controller
     // List (JSON) — optional if you go fully non-AJAX
     public function index(ExpenseSheet $sheet, ExpenseRow $row)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('download', $row);
         abort_if($row->expense_sheet_id !== $sheet->id, 404);
 
         $atts = $row->attachments()->latest()->get()->map(function ($a) {
@@ -38,7 +38,7 @@ class RowAttachmentController extends Controller
     // Upload (supports multiple files)
     public function store(Request $request, ExpenseSheet $sheet, ExpenseRow $row)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('update', $sheet);
         abort_if($row->expense_sheet_id !== $sheet->id, 404);
 
         $request->validate([
@@ -69,7 +69,7 @@ class RowAttachmentController extends Controller
     public function download(ExpenseRowAttachment $att): BinaryFileResponse
     {
         $att->load('row.sheet');
-        $this->authorizeSheet($att->row->sheet);
+        $this->authorize('download', $att->row);
 
         $fullPath = Storage::disk($att->disk)->path($att->path);
         return response()->download($fullPath, $att->original_name);
@@ -78,7 +78,9 @@ class RowAttachmentController extends Controller
     // View inline (images/pdf)
     public function view(ExpenseRowAttachment $att)
     {
-        $this->authorizeSheet($att->row->sheet);
+        $att->load('row.sheet');
+        $this->authorize('download', $att->row);
+
         $path = Storage::disk($att->disk)->path($att->path);
         return response()->file($path);
     }
@@ -86,7 +88,7 @@ class RowAttachmentController extends Controller
     // Delete
     public function destroy(ExpenseSheet $sheet, ExpenseRow $row, ExpenseRowAttachment $att)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('delete', $row);
         abort_if($row->expense_sheet_id !== $sheet->id || $att->expense_row_id !== $row->id, 404);
 
         Storage::disk($att->disk)->delete($att->path);
@@ -95,22 +97,9 @@ class RowAttachmentController extends Controller
         return back()->with('status', 'Attachment deleted.');
     }
 
-    // ---- helper copied from your ExpenseSheetController ----
-    protected function authorizeSheet(ExpenseSheet $sheet): void
-    {
-        if (!Auth::check()) {
-            abort(403);
-        }
-
-        // Optional strict ownership rule (recommended):
-        if (!Auth::user()->is_admin && $sheet->user_id !== Auth::id()) {
-            abort(403);
-        }
-    }
-
     public function bundlePdf(ExpenseSheet $sheet, ExpenseRow $row)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('download', $row);
         abort_if($row->expense_sheet_id !== $sheet->id, 404);
 
         $attachments = $row->attachments()->get();

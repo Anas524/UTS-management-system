@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ExpenseRow extends Model
 {
@@ -34,5 +35,11 @@ class ExpenseRow extends Model
     public function attachments()
     {
         return $this->hasMany(ExpenseRowAttachment::class, 'expense_row_id');
+    }
+
+    // Back-compat alias so scoped bindings for {att} work
+    public function atts(): HasMany
+    {
+        return $this->attachments();
     }
 }

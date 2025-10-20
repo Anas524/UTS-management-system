@@ -7,6 +7,7 @@ use App\Models\ExpenseRow;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Maatwebsite\Excel\Facades\Excel;
+use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use App\Exports\ExpenseSheetExport;
@@ -40,14 +41,44 @@ class ExpenseSheetController extends Controller
         }
     }
 
+    public function __construct()
+    {
+        // param name must match your route: /expenses/{sheet}
+        $this->authorizeResource(ExpenseSheet::class, 'sheet');
+    }
+
     public function index(Request $request)
     {
-        $query = ExpenseSheet::query()->with('user');
+        $this->authorize('viewAny', ExpenseSheet::class);
 
-        // Admin sees all, users see only their own
-        if (!Auth::user()->is_admin) {
-            $query->where('user_id', Auth::id());
+        $u = Auth::user();
+
+        $query = ExpenseSheet::query()
+            ->with('user')
+            ->withSum('rows as total_debit', 'debit')
+            ->withSum('rows as total_credit', 'credit');
+
+        // Normal users see only their own; admins & consultants see all
+        if (!$u->is_admin && $u->role !== 'consultant') {
+            // normal users only see their own
+            $query->where('user_id', $u->id);
         }
+
+        // compute ALL visible totals (independent of pagination)
+        $visibleIds = (clone $query)->pluck('id');
+
+        // TRUNCATE each value before summing so we don't round up
+        $global = DB::table('expense_rows')
+            ->whereIn('expense_sheet_id', $visibleIds)
+            ->selectRaw('
+                COALESCE(SUM(TRUNCATE(debit,  0)), 0) AS debit,
+                COALESCE(SUM(TRUNCATE(credit, 0)), 0) AS credit
+            ')
+            ->first();
+
+        // Cast as int via string to avoid float conversion
+        $allDebit  = (int) (string) $global->debit;
+        $allCredit = (int) (string) $global->credit;
 
         // sort strictly by year then month (Jan → Dec)
         $sheets = $query
@@ -55,11 +86,17 @@ class ExpenseSheetController extends Controller
             ->orderBy('period_month', 'asc')
             ->paginate(10);
 
-        return view('expenses.index', compact('sheets'));
+        return view('expenses.index', [
+            'sheets'    => $sheets,
+            'allDebit'  => $allDebit,
+            'allCredit' => $allCredit,
+        ]);
     }
 
     public function store(Request $request)
     {
+        $this->authorize('create', ExpenseSheet::class);
+
         $data = $request->validate([
             'period_month' => 'required|integer|min:1|max:12',
             'period_year'  => 'required|integer|min:2000|max:2100',
@@ -77,7 +114,7 @@ class ExpenseSheetController extends Controller
 
     public function show(Request $request, ExpenseSheet $sheet)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('view', $sheet);
 
         $order = $request->get('order', 'desc') === 'asc' ? 'asc' : 'desc';
         // remove default "position" ordering from relation and sort by date/id
@@ -100,7 +137,7 @@ class ExpenseSheetController extends Controller
 
     public function updateBeginning(Request $request, ExpenseSheet $sheet)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('update', $sheet);
 
         // sanatize first
         $this->normalizeRupiah($request, ['beginning_balance']);
@@ -116,7 +153,7 @@ class ExpenseSheetController extends Controller
 
     public function addRow(Request $request, ExpenseSheet $sheet)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('update', $sheet);
 
         $data = $request->validate([
             'date'        => 'required|date',
@@ -138,7 +175,8 @@ class ExpenseSheetController extends Controller
 
     public function updateRow(Request $request, ExpenseSheet $sheet, ExpenseRow $row)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('update', $sheet);
+
         // Re-resolve so it MUST belong to this sheet
         $row = $sheet->rows()->whereKey($row->getKey())->firstOrFail();
 
@@ -169,7 +207,8 @@ class ExpenseSheetController extends Controller
 
     public function deleteRow(ExpenseSheet $sheet, ExpenseRow $row)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('update', $sheet);
+
         // Re-resolve so it MUST belong to this sheet
         $row = $sheet->rows()->whereKey($row->getKey())->firstOrFail();
 
@@ -177,15 +216,9 @@ class ExpenseSheetController extends Controller
         return back()->with('status', 'Row removed.');
     }
 
-    private function authorizeSheet(ExpenseSheet $sheet): void
-    {
-        if (Auth::user()->is_admin) return;
-        if ($sheet->user_id !== Auth::id()) abort(403);
-    }
-
     public function export(ExpenseSheet $sheet)
     {
-        $this->authorizeSheet($sheet);
+        $this->authorize('export', ExpenseSheet::class);
 
         $periodLabel = Carbon::create($sheet->period_year, $sheet->period_month, 1)->format('F Y');
         $filename = "Expense Sheet - {$periodLabel}.xlsx"; // e.g. "Expense Sheet - August 2025.xlsx"

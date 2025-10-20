@@ -2,6 +2,11 @@
 @section('title','Expense Sheet')
 
 @section('content')
+
+@php
+$isConsultant = auth()->user()?->role === 'consultant';
+@endphp
+
 <div class="sheet-wrap">
     <div class="sheet-card">
 
@@ -30,14 +35,22 @@
         <div class="sheet-meta">
             <div>Beginning Balance:
                 <strong>{{ is_null($begin) ? '–' : 'IDR '.number_format($begin,0,',','.') }}</strong>
+                @can('update', $sheet)
                 <button class="mini-link" data-modal-open="#modalBegin">Set</button>
+                @endcan
             </div>
         </div>
 
-        <div class="sheet-toolbar">
-            <button class="sheet-btn sheet-btn-primary" data-modal-open="#modalAddRow">+ Add Row</button>
+        @if($isConsultant)
+            <div class="muted" style="margin:.5rem 0 0 0;">Read-only mode: you can view, download, and export.</div>
+        @endif
 
-            <form method="GET" action="{{ route('expenses.show', $sheet) }}" class="sort-select modern-sort" id="sortForm">
+        <div class="sheet-toolbar">
+            @can('update', $sheet)
+            <button class="sheet-btn sheet-btn-primary" data-modal-open="#modalAddRow">+ Add Row</button>
+            @endcan
+
+            <form method="GET" action="{{ route('expenses.show', $sheet) }}" class="sort-select modern-sort" id="sortForm" style="margin-left:auto">
                 <input type="hidden" name="order" id="orderInput" value="{{ $order }}">
                 <div class="sort-dropdown" id="sortDropdown">
                     <button type="button" class="sort-trigger" id="sortTrigger" aria-haspopup="listbox" aria-expanded="false">
@@ -67,35 +80,38 @@
                     </tr>
                 </thead>
                 <tbody>
+                    @php $lock = $isConsultant ? 'disabled readonly class=locked-input' : ''; @endphp
+
                     @forelse ($rows as $i => $r)
                     <tr>
                         <td>{{ $i+1 }}</td>
                         <td>
                             <form method="POST" action="{{ route('expenses.rows.update', [$sheet,$r]) }}">
                                 @csrf @method('PATCH')
-                                <input type="date" name="date" value="{{ $r->date->format('Y-m-d') }}">
+                                <input type="date" name="date" value="{{ $r->date->format('Y-m-d') }}" {!! $lock !!}>
                         </td>
                         <td>
-                            <input type="text" name="description" value="{{ $r->description }}">
+                            <input type="text" name="description" value="{{ $r->description }}" {!! $lock !!}>
                         </td>
                         <td>
-                            <input type="text" name="doc_number" value="{{ $r->doc_number }}">
+                            <input type="text" name="doc_number" value="{{ $r->doc_number }}" {!! $lock !!}>
                         </td>
                         <td class="right">
-                            <input type="text" name="debit" class="currency-input" value="{{ is_null($r->debit) ? '' : 'IDR '.number_format($r->debit,0,',','.') }}">
+                            <input type="text" name="debit" class="currency-input" value="{{ is_null($r->debit) ? '' : 'IDR '.number_format($r->debit,0,',','.') }}" {!! $lock !!}>
                         </td>
                         <td class="right">
-                            <input type="text" name="credit" class="currency-input" value="{{ is_null($r->credit) ? '' : 'IDR '.number_format($r->credit,0,',','.') }}">
+                            <input type="text" name="credit" class="currency-input" value="{{ is_null($r->credit) ? '' : 'IDR '.number_format($r->credit,0,',','.') }}" {!! $lock !!}>
                         </td>
                         <td class="right">
-                            <input type="text" name="amount" class="currency-input" value="{{ is_null($r->amount) ? '' : 'IDR '.number_format($r->amount,0,',','.') }}">
+                            <input type="text" name="amount" class="currency-input" value="{{ is_null($r->amount) ? '' : 'IDR '.number_format($r->amount,0,',','.') }}" {!! $lock !!}>
                         </td>
                         <td>
-                            <input type="text" name="remarks" value="{{ $r->remarks }}">
+                            <input type="text" name="remarks" value="{{ $r->remarks }}" {!! $lock !!}>
                         </td>
                         <td class="right">
                             <div class="icon-actions">
                                 {{-- Save (submits the PATCH form that started in Date cell) --}}
+                                @can('update', $sheet)
                                 <button class="icon-btn icon-save" type="submit" title="Save" aria-label="Save">
                                     <!-- check-circle -->
                                     <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -104,9 +120,11 @@
                                     </svg>
                                     <span class="sr-only">Save</span>
                                 </button>
+                                @endcan
                                 </form> {{-- closes the PATCH form --}}
 
                                 {{-- Delete --}}
+                                @can('delete', $r)
                                 <form method="POST" action="{{ route('expenses.rows.delete', [$sheet,$r]) }}" class="inline-form js-confirm" data-confirm="Delete this row?">
                                     @csrf @method('DELETE')
                                     <button class="icon-btn icon-del" type="submit" title="Delete" aria-label="Delete">
@@ -121,6 +139,7 @@
                                         <span class="sr-only">Delete</span>
                                     </button>
                                 </form>
+                                @endcan
 
                                 {{-- Attachments toggle button (paperclip) stays the same --}}
                                 <button type="button"
@@ -169,10 +188,12 @@
 
                                             <a href="{{ route('attachments.download', $a) }}" class="attach-btnmini" title="Download original">Download</a>
 
+                                            @can('delete', $r)
                                             <form method="POST" action="{{ route('attachments.destroy', [$sheet,$r,$a]) }}" class="inline-form js-confirm" data-confirm="Delete this attachment?">
                                                 @csrf @method('DELETE')
                                                 <button class="attach-btnmini danger" title="Delete">Delete</button>
                                             </form>
+                                            @endcan
                                         </li>
                                         @empty
                                         <li class="muted">No files yet</li>
@@ -180,6 +201,7 @@
                                     </ul>
 
                                     {{-- upload area: custom "Browse…" instead of native "Choose files" --}}
+                                    @can('update', $sheet)
                                     <form method="POST" action="{{ route('attachments.store', [$sheet,$r]) }}" enctype="multipart/form-data" class="attach-upload">
                                         @csrf
                                         @php $inputId = 'files-'.$r->id; @endphp
@@ -188,6 +210,7 @@
                                         <span class="attach-selected" data-default="No files selected">No files selected</span>
                                         <button class="attach-btn">Upload</button>
                                     </form>
+                                    @endcan
                                 </div>
                             </div>
                         </td>
@@ -241,10 +264,14 @@
             @csrf @method('PATCH')
             <div class="field-row">
                 <label>Beginning Balance</label>
-                <input type="text" name="beginning_balance" class="currency-input" value="{{ is_null($begin) ? '' : 'IDR '.number_format($begin,0,',','.') }}">
+                <input type="text" name="beginning_balance" class="currency-input"
+                    value="{{ is_null($begin) ? '' : 'IDR '.number_format($begin,0,',','.') }}"
+                    @if($isConsultant) disabled readonly @endif>
             </div>
             <div class="modal-actions">
+                @can('update', $sheet)
                 <button type="submit" class="sheet-btn sheet-btn-primary">Save</button>
+                @endcan
                 <button type="button" class="sheet-btn sheet-btn-ghost" data-modal-close>Cancel</button>
             </div>
         </form>
@@ -252,6 +279,7 @@
 </div>
 
 {{-- Add Row Modal --}}
+@can('update', $sheet)
 <div class="modal" id="modalAddRow" aria-hidden="true">
     <div class="modal-backdrop" data-modal-close></div>
     <div class="modal-card">
@@ -276,6 +304,7 @@
         </form>
     </div>
 </div>
+@endcan
 
 {{-- Confirm Delete Modal (reusable) --}}
 <div class="modal" id="modalConfirm" aria-hidden="true">

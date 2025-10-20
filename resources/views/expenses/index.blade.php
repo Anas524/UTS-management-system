@@ -9,7 +9,21 @@
                 <div class="sheet-company">PT: Universal Trade Services</div>
                 <h1 class="sheet-title">Expense Sheets</h1>
             </div>
+            @can('create', App\Models\ExpenseSheet::class)
             <button class="sheet-btn sheet-btn-primary" data-modal-open="#modalCreate">+ Add Sheet</button>
+            @endcan
+        </div>
+
+        {{-- Global totals (all sheets the user can see) --}}
+        <div class="stats-wrap">
+            <div class="stat-card">
+                <div class="stat-label">Total Debit</div>
+                <div class="stat-value">IDR {{ number_format($allDebit, 0, ',', '.') }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Credit</div>
+                <div class="stat-value">IDR {{ number_format($allCredit, 0, ',', '.') }}</div>
+            </div>
         </div>
 
         @if (session('status'))
@@ -23,6 +37,8 @@
                         <th>No</th>
                         <th>Period</th>
                         <th>Owner</th>
+                        <th class="right">Total Debit</th>
+                        <th class="right">Total Credit</th>
                         <th>Created</th>
                         <th>Open</th>
                     </tr>
@@ -33,12 +49,14 @@
                         <td>{{ $sheets->firstItem() + $i }}</td>
                         <td>{{ strftime('%B', mktime(0,0,0,$s->period_month,1)) }} {{ $s->period_year }}</td>
                         <td>{{ $s->user->name }}</td>
+                        <td class="right">IDR {{ number_format((int)$s->total_debit, 0, ',', '.') }}</td>
+                        <td class="right">IDR {{ number_format((int)$s->total_credit, 0, ',', '.') }}</td>
                         <td>{{ $s->created_at->format('Y-m-d') }}</td>
                         <td><a class="table-link" href="{{ route('expenses.show', $s) }}">Open</a></td>
                     </tr>
                     @empty
                     <tr>
-                        <td colspan="5" class="empty">No sheets yet</td>
+                        <td colspan="7" class="empty">No sheets yet</td>
                     </tr>
                     @endforelse
                 </tbody>
@@ -52,6 +70,7 @@
 </div>
 
 {{-- Create Sheet Modal --}}
+@can('create', App\Models\ExpenseSheet::class)
 <div class="modal" id="modalCreate" aria-hidden="true">
     <div class="modal-backdrop" data-modal-close></div>
     <div class="modal-card">
@@ -80,6 +99,7 @@
         </form>
     </div>
 </div>
+@endcan
 
 @push('before-scripts')
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>

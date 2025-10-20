@@ -4,6 +4,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use App\Http\Middleware\AdminMiddleware;
+use App\Http\Middleware\ConsultantReadOnly;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -12,12 +13,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        // If you want to add global middleware: $middleware->append(...);
-
         // Add or extend route middleware aliases:
         $middleware->alias([
             // keep existing aliases if present (auth, verified, etc.)
             'admin' => AdminMiddleware::class,
+            'consultant.readonly' => ConsultantReadOnly::class,
         ]);
 
         // (Optional) you can also adjust groups:

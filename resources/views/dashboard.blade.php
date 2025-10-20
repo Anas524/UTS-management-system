@@ -8,8 +8,11 @@
             <img class="dash-logo" src="{{ asset('images/UTS.png') }}" alt="UTS">
             <div>
                 <h1 class="dash-title">Hello, {{ auth()->user()->name }} 👋</h1>
+                @php
+                $role = auth()->user()->role ?? (auth()->user()->is_admin ? 'admin' : 'user');
+                @endphp
                 <p class="dash-sub">Logged in as
-                    <span class="dash-badge">{{ auth()->user()->is_admin ? 'Admin' : 'User' }}</span>
+                    <span class="dash-badge">{{ $role === 'admin' || auth()->user()->is_admin ? 'Admin' : ($role === 'consultant' ? 'Consultant' : 'User') }}</span>
                 </p>
             </div>
         </div>
@@ -21,7 +24,7 @@
                     <dt>Email</dt>
                     <dd>{{ auth()->user()->email }}</dd>
                     <dt>Role</dt>
-                    <dd>{{ auth()->user()->is_admin ? 'Admin' : 'User' }}</dd>
+                    <dd>{{ $role === 'admin' || auth()->user()->is_admin ? 'Admin' : ($role === 'consultant' ? 'Consultant' : 'User') }}</dd>
                 </dl>
             </div>
 
@@ -42,10 +45,19 @@
 
         <div class="dash-box">
             <h3>Expense Sheets</h3>
-            <p class="dash-help">Create and manage monthly expense sheets.</p>
+            <p class="dash-help">
+                @if($role === 'consultant')
+                You have read-only access. You can open sheets, view/download attachments, and export to Excel.
+                @else
+                Create and manage monthly expense sheets.
+                @endif
+            </p>
             <div class="dash-actions">
                 <a href="{{ route('expenses.index') }}" class="dash-btn dash-btn-primary">Open Expense Sheets</a>
-                <a href="{{ route('expenses.index', ['new' => 1]) }}" class="dash-btn dash-btn-gold">Create New Sheet</a>
+
+                @can('create', App\Models\ExpenseSheet::class)
+                    <a href="{{ route('expenses.index', ['new' => 1]) }}" class="dash-btn dash-btn-gold">Create New Sheet</a>
+                @endcan
             </div>
         </div>
 

@@ -1115,11 +1115,11 @@ footer {
     margin: 8px 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
 }
 
-.sort-select {
-    position: relative;
+.sheet-toolbar .sort-select {
+    margin-left: auto; /* pushes sort form to the right */
 }
 
 .sort-select select {
@@ -1842,6 +1842,27 @@ footer {
     color: var(--uts-blue);
     cursor: pointer;
     transition: border-color .18s ease, box-shadow .18s ease, transform .06s ease, background .18s ease, color .18s ease;
+    position: relative;
+}
+
+/* add the ▼ arrow */
+.sort-trigger::after {
+    content: "";
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+    transform: translateY(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #555; /* arrow color */
+}
+
+.sort-dropdown.open .sort-trigger::after {
+    border-top: none;
+    border-bottom: 6px solid #555; /* flip arrow when open */
 }
 
 .sort-trigger:hover {
@@ -1916,4 +1937,40 @@ footer {
     .sort-trigger {
         min-width: 160px;
     }
+}
+
+/* cards container (reused) */
+.stats-wrap{
+  display:flex;
+  gap:16px;
+  flex-wrap:wrap;
+}
+
+/* the inline variant used inside the sheet card */
+.stats-inline{
+  justify-content:flex-end;      /* push to right */
+  margin: 8px 0 12px;            /* snug spacing under header */
+}
+
+/* card look */
+.stat-card{
+  min-width: 220px;
+  background: linear-gradient(180deg,#fff 0%, #f9fbff 100%);
+  border: 1px solid #dfe7ef;
+  border-radius: 14px;
+  padding: 10px 14px;
+  box-shadow: 0 8px 24px rgba(2,32,71,.06);
+}
+
+.stat-label{
+  font-size:12px;
+  color:#6b7280;
+  margin-bottom:4px;
+}
+
+.stat-value{
+  font-size:18px;
+  font-weight:800;
+  color: var(--uts-blue, #0f3d56);
+  letter-spacing:.2px;
 }
