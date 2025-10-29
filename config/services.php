@@ -35,4 +35,7 @@ return [
         ],
     ],
 
+    'pdftotext' => ['path' => env('PDFTOTEXT_PATH')],
+    'tesseract' => ['path' => env('TESSERACT_PATH')],
+
 ];

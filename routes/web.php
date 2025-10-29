@@ -6,6 +6,8 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\AdminController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExpenseSheetController;
+use App\Http\Controllers\POAttachmentController;
+use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\RowAttachmentController;
 
 Route::get('/', [HomeController::class, 'index'])->name('home');
@@ -63,7 +65,42 @@ Route::middleware(['auth', 'consultant.readonly'])->scopeBindings()->group(funct
         ->name('attachments.download');
     Route::get('/attachments/{att}/view', [RowAttachmentController::class, 'view'])
         ->name('attachments.view');
-        
-    Route::get('/expenses/{sheet}/rows/{row}/attachments/bundle-pdf', [RowAttachmentController::class, 'bundlePdf']
-    )->name('attachments.bundle');
+
+    Route::get('/expenses/{sheet}/rows/{row}/attachments/bundle-pdf', [RowAttachmentController::class, 'bundlePdf'])->name('attachments.bundle');
+
+    // inline-preview that always returns a PDF page
+    Route::get('/attachments/{att}/preview', [RowAttachmentController::class, 'preview'])
+        ->name('attachments.preview');
+
+
+    // PO listing + create/show + rows + import
+    Route::get('/po/find', [PurchaseOrderController::class, 'find'])->name('po.find');
+    Route::get('/po/get',  [PurchaseOrderController::class, 'get'])->name('po.get');
+
+    Route::get('/po',                [PurchaseOrderController::class, 'index'])->name('po.index');
+    Route::get('/po/create',         [PurchaseOrderController::class, 'create'])->name('po.create');
+    Route::post('/po',               [PurchaseOrderController::class, 'store'])->name('po.store');
+    Route::get('/po/{po}',           [PurchaseOrderController::class, 'show'])->name('po.show');
+    Route::delete('/po/{po}',        [PurchaseOrderController::class, 'destroy'])->name('po.destroy');
+    Route::patch('/po/{po}',         [PurchaseOrderController::class, 'update'])->name('po.update');
+
+
+    Route::post('/po/{po}/rows',     [PurchaseOrderController::class, 'addRow'])->name('po.rows.add');
+    Route::patch('/po/{po}/rows/{row}', [PurchaseOrderController::class, 'updateRow'])->name('po.rows.update');
+    Route::delete('/po/{po}/rows/{row}', [PurchaseOrderController::class, 'deleteRow'])->name('po.rows.delete');
+
+    Route::post('/po/import',        [PurchaseOrderController::class, 'import'])->name('po.import');
+
+    Route::post('/po/{po}/rows/bulk-save', [PurchaseOrderController::class, 'bulkSave'])
+        ->name('po.rows.bulkSave');
+
+    Route::get('/po/{po}/pdf', [PurchaseOrderController::class, 'exportPdf'])
+        ->name('po.pdf');
+
+    Route::get('/po/{po}/attachments', [PoAttachmentController::class, 'index'])->name('po.attachments.index');
+    Route::post('/po/{po}/attachments', [PoAttachmentController::class, 'store'])->name('po.attachments.store');
+    Route::delete('/po/attachments/{att}', [PoAttachmentController::class, 'destroy'])->name('po.attachments.destroy');
+    Route::get('/po/attachments/{att}/download', [PoAttachmentController::class, 'download'])->name('po.attachments.download');
+    Route::get('/po/attachments/{att}/view', [PoAttachmentController::class, 'view'])->name('po.attachments.view');
+    Route::get('/po/{po}/attachments/bundle', [PoAttachmentController::class, 'bundle'])->name('po.attachments.bundle');
 });

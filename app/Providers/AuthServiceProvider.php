@@ -7,6 +7,8 @@ use App\Models\ExpenseSheet;
 use App\Policies\ExpenseRowPolicy;
 use App\Policies\ExpenseSheetPolicy;
 use Illuminate\Foundation\Support\Providers\AuthServiceProvider as ServiceProvider;
+use App\Models\PurchaseOrder;
+use App\Policies\PurchaseOrderPolicy;
 
 class AuthServiceProvider extends ServiceProvider
 {
@@ -18,6 +20,7 @@ class AuthServiceProvider extends ServiceProvider
     protected $policies = [
         ExpenseSheet::class => ExpenseSheetPolicy::class,
         ExpenseRow::class   => ExpenseRowPolicy::class,
+        PurchaseOrder::class => PurchaseOrderPolicy::class,
     ];
 
     /**

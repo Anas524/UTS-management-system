@@ -56,7 +56,27 @@
                 <a href="{{ route('expenses.index') }}" class="dash-btn dash-btn-primary">Open Expense Sheets</a>
 
                 @can('create', App\Models\ExpenseSheet::class)
-                    <a href="{{ route('expenses.index', ['new' => 1]) }}" class="dash-btn dash-btn-gold">Create New Sheet</a>
+                <a href="{{ route('expenses.index', ['new' => 1]) }}" class="dash-btn dash-btn-gold">Create New Sheet</a>
+                @endcan
+            </div>
+        </div>
+
+        {{-- Purchase Orders --}}
+        <div class="dash-box">
+            <h3>Purchase Orders</h3>
+            <p class="dash-help">
+                @if($role === 'consultant')
+                You have read-only access. You can open POs and download files.
+                @else
+                Create, edit, and manage purchase orders.
+                @endif
+            </p>
+
+            <div class="dash-actions">
+                <a href="{{ route('po.index') }}" class="dash-btn dash-btn-primary">Open Purchase Orders</a>
+
+                @can('create', App\Models\PurchaseOrder::class)
+                <a href="{{ route('po.create') }}" class="dash-btn dash-btn-gold">Create New PO</a>
                 @endcan
             </div>
         </div>

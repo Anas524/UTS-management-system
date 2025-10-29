@@ -9,9 +9,13 @@
                 <div class="sheet-company">PT: Universal Trade Services</div>
                 <h1 class="sheet-title">Expense Sheets</h1>
             </div>
-            @can('create', App\Models\ExpenseSheet::class)
-            <button class="sheet-btn sheet-btn-primary" data-modal-open="#modalCreate">+ Add Sheet</button>
-            @endcan
+
+            <div class="sheet-head-actions">
+                <a href="{{ route('dashboard') }}" class="sheet-btn sheet-btn-ghost">← Back</a>
+                @can('create', App\Models\ExpenseSheet::class)
+                <button class="sheet-btn sheet-btn-primary" data-modal-open="#modalCreate">+ Add Sheet</button>
+                @endcan
+            </div>
         </div>
 
         {{-- Global totals (all sheets the user can see) --}}
@@ -100,10 +104,6 @@
     </div>
 </div>
 @endcan
-
-@push('before-scripts')
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-@endpush
 
 @push('scripts')
 <script>

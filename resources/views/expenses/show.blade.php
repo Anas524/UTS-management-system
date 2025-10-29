@@ -42,7 +42,7 @@ $isConsultant = auth()->user()?->role === 'consultant';
         </div>
 
         @if($isConsultant)
-            <div class="muted" style="margin:.5rem 0 0 0;">Read-only mode: you can view, download, and export.</div>
+        <div class="muted" style="margin:.5rem 0 0 0;">Read-only mode: you can view, download, and export.</div>
         @endif
 
         <div class="sheet-toolbar">
@@ -153,12 +153,11 @@ $isConsultant = auth()->user()?->role === 'consultant';
                                 </button>
 
                                 {{-- View attachments button (eye icon) opens files sequentially --}}
-                                @php
-                                $viewUrls = $r->attachments->map(fn($a) => route('attachments.view', $a))->values();
-                                @endphp
                                 <button type="button"
                                     class="icon-btn icon-view js-open-attachments"
-                                    data-urls='@json($viewUrls)'
+                                    data-endpoint="{{ route('attachments.index', [$sheet, $r]) }}"
+                                    data-sheet-id="{{ $sheet->id }}"
+                                    data-row-id="{{ $r->id }}"
                                     title="View attachments"
                                     aria-label="View attachments">
                                     <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -324,9 +323,23 @@ $isConsultant = auth()->user()?->role === 'consultant';
     </div>
 </div>
 
-@push('before-scripts')
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-@endpush
+{{-- Attachments Viewer Modal (stacked cards, full width, no pagination) --}}
+<div id="attsViewer" class="modal atts-modal" aria-hidden="true">
+    <div class="modal-backdrop" data-modal-close></div>
+
+    <div class="modal-card">
+        <div class="atts-head" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #e5e7eb;">
+            <strong>Attachments</strong>
+            <div class="atts-head-actions" style="display:flex;align-items:center;gap:10px;">
+                <span id="attsCounter"></span>
+                <button class="attach-close btn-mini" data-modal-close title="Close" aria-label="Close">×</button>
+            </div>
+        </div>
+
+        <!-- NEW: scrollable area; cards will be injected here -->
+        <div id="attsScroll" class="atts-scroll"></div>
+    </div>
+</div>
 
 @push('scripts')
 <script>
@@ -396,96 +409,107 @@ $isConsultant = auth()->user()?->role === 'consultant';
             });
         }
 
-        // View attachments in a single popup with next/prev controls and zoom
+        // --- FULL CARD VIEWER (no pagination) ---
+        let attsState = {
+            items: [],
+            open: false
+        };
+
+        const $viewer = $('#attsViewer');
+        const $scroll = $('#attsScroll'); // <- new container
+        const $counter = $('#attsCounter');
+
+        // responsive viewer height for each card's preview area
+        function setViewerHeight() {
+            const vh = Math.max(480, Math.floor(window.innerHeight * 0.62));
+            document.documentElement.style.setProperty('--att-viewer-h', `${vh}px`);
+        }
+
+        function openViewer() {
+            setViewerHeight();
+            $viewer.addClass('open');
+            attsState.open = true;
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeViewer() {
+            $viewer.removeClass('open');
+            attsState.open = false;
+            document.body.style.overflow = '';
+        }
+
+        $(document).on('click', '#attsViewer [data-modal-close]', closeViewer);
+        $(document).on('keydown', e => {
+            if (attsState.open && e.key === 'Escape') closeViewer();
+        });
+        $(window).on('resize', () => {
+            if (attsState.open) setViewerHeight();
+        });
+
+        function kindOf(mime) {
+            if (!mime) return 'other';
+            if (mime.startsWith('image/')) return 'image';
+            if (mime === 'application/pdf') return 'pdf';
+            if (mime.startsWith('text/')) return 'text';
+            return 'other';
+        }
+
+        function renderAll() {
+            $scroll.empty();
+            $counter.text(`${attsState.items.length} file${attsState.items.length===1?'':'s'}`);
+
+            attsState.items.forEach(it => {
+                const k = kindOf(it.mime);
+
+                let viewerHTML = '';
+                if (k === 'image') {
+                    viewerHTML = `<div class="att-view"><img src="${it.view}" alt="${it.name || ''}"></div>`;
+                } else if (k === 'pdf' || k === 'text') {
+                    viewerHTML = `<div class="att-view"><iframe src="${it.view}" frameborder="0"></iframe></div>`;
+                } else {
+                    viewerHTML = `
+        <div class="att-placeholder">
+          <div>
+            <div style="font-weight:700;margin-bottom:.25rem;">Preview not available</div>
+            <div style="font-size:.875rem;margin-bottom:.75rem;">Type: ${it.mime || 'unknown'}</div>
+            <a class="sheet-btn sheet-btn-primary" href="${it.download}" download>Download ${it.name || 'file'}</a>
+          </div>
+        </div>`;
+                }
+
+                const card = `
+      <div class="att-card">
+        <div class="att-head">
+          <div class="att-name" title="${it.name || ''}">${it.name || 'Attachment'}</div>
+          <a class="sheet-btn sheet-btn-primary" href="${it.download}" download>Download</a>
+        </div>
+        ${viewerHTML}
+      </div>
+    `;
+                $scroll.append(card);
+            });
+        }
+
+        function fetchAndOpen(sheetId, rowId) {
+            $.getJSON(`/expenses/${sheetId}/rows/${rowId}/attachments`)
+                .done(list => {
+                    attsState.items = Array.isArray(list) ? list : [];
+                    if (!attsState.items.length) {
+                        alert('No attachments found.');
+                        return;
+                    }
+                    openViewer();
+                    renderAll();
+                })
+                .fail(() => alert('Could not load attachments.'));
+        }
+
+        // open from the row button
         $(document).on('click', '.js-open-attachments', function() {
-            var urls = $(this).attr('data-urls');
-            var $btn = $(this);
-
-            function showTip(msg) {
-                var $tip = $('<span class=\'no-attach-tip\'>' + msg + '</span>').appendTo('body');
-                var off = $btn.offset();
-                $tip.css({
-                    top: off.top - $tip.outerHeight() - 8,
-                    left: off.left + ($btn.outerWidth() - $tip.outerWidth()) / 2
-                }).fadeIn(200);
-                setTimeout(function() {
-                    $tip.fadeOut(200, function() {
-                        $(this).remove();
-                    });
-                }, 2000);
-            }
-
-            if (!urls) {
-                showTip('This row has no attachments');
-                return;
-            }
-            try {
-                urls = JSON.parse(urls);
-            } catch (e) {
-                urls = [];
-            }
-            if (!urls.length) {
-                showTip('This row has no attachments');
-                return;
-            }
-
-            var win = window.open('', '_blank');
-            if (!win) return;
-
-            var popupHtml = `<!DOCTYPE html>
-            <html>
-                <head>
-                <meta charset="utf-8">
-                <title>Attachments</title>
-                <style>
-                body{margin:0;display:flex;flex-direction:column;height:100vh;background:#f3f4f6;overflow:hidden;}
-                #viewer-wrap{flex:1;width:100%;background:#fff;display:flex;justify-content:center;align-items:center;overflow:hidden;}
-                #viewer{width:100%;height:100%;border:0;transform-origin:0 0;}
-                .controls{display:flex;justify-content:center;align-items:center;gap:12px;padding:10px;background:#fff;box-shadow:0 -1px 3px rgba(0,0,0,.1);}
-                .controls button{background:none;border:0;padding:4px;cursor:pointer;}
-                .controls button:disabled{opacity:.3;cursor:default;}
-                .controls svg{width:24px;height:24px;stroke:#2563eb;stroke-width:2;fill:none;}
-                </style>
-                </head>
-            <body>
-                <div id="viewer-wrap"><iframe id="viewer"></iframe></div>
-                <div class="controls">
-                    <button id="prevBtn" title="Previous"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" /></svg></button>
-                    <button id="zoomOut" title="Zoom out"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="M8 11h6" /><path d="M21 21l-4.35-4.35" /></svg></button>
-                    <span id="counter"></span>
-                    <button id="zoomIn" title="Zoom in"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="M8 11h6" /><path d="M11 8v6" /><path d="M21 21l-4.35-4.35" /></svg></button>
-                    <button id="nextBtn" title="Next"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg></button>
-                    </div>
-                <script>
-                    var urls = ${JSON.stringify(urls)};
-                    var idx = 0;
-                    var iframe = document.getElementById('viewer');
-                    var counter = document.getElementById('counter');
-                    var prevBtn = document.getElementById('prevBtn');
-                    var nextBtn = document.getElementById('nextBtn');
-                    var zoomIn = document.getElementById('zoomIn');
-                    var zoomOut = document.getElementById('zoomOut');
-                    var scale = 1;
-                    function applyZoom(){
-                    iframe.style.transform = 'scale('+scale+')';
-                    }
-                    function update(){
-                    iframe.src = urls[idx];
-                    counter.textContent = (idx+1)+' / '+urls.length;
-                    prevBtn.disabled = idx===0;
-                    nextBtn.disabled = idx===urls.length-1;
-                    }
-                    prevBtn.onclick = function(){ if(idx>0){idx--; update();} };
-                    nextBtn.onclick = function(){ if(idx<urls.length-1){idx++; update();} };
-                    zoomIn.onclick = function(){ if(scale<3){scale+=0.25; applyZoom();} };
-                    zoomOut.onclick = function(){ if(scale>0.5){scale-=0.25; applyZoom();} };
-                    update();
-                    applyZoom();
-                <\/script>
-            </body>
-            </html>`;
-            win.document.write(popupHtml);
-            win.document.close();
+            const sheetId = $(this).data('sheet-id');
+            const rowId = $(this).data('row-id');
+            if (!sheetId || !rowId) return;
+            fetchAndOpen(sheetId, rowId);
         });
 
         // open/close and place centered within sheet-card

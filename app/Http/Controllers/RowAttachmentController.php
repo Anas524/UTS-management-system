@@ -27,7 +27,7 @@ class RowAttachmentController extends Controller
                 'name' => $a->original_name,
                 'size' => $a->size,
                 'mime' => $a->mime,
-                'view' => route('attachments.view', $a),      // inline preview (images/pdf)
+                'view' => route('attachments.preview', $a),      // was attachments.view
                 'download' => route('attachments.download', $a),
             ];
         });
@@ -232,5 +232,40 @@ class RowAttachmentController extends Controller
     private function esc(string $s): string
     {
         return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    public function preview(ExpenseRowAttachment $att)
+    {
+        $att->load('row.sheet');
+        $this->authorize('download', $att->row);
+
+        $full  = Storage::disk($att->disk)->path($att->path);
+        $mime  = $att->mime ?? mime_content_type($full);
+        $title = $att->original_name;
+
+        // 1) Images -> stream original image inline (no DomPDF)
+        if (str_starts_with($mime, 'image/')) {
+            return response()->file($full, [
+                'Content-Type'        => $mime,
+                'Content-Disposition' => 'inline; filename="' . $title . '"',
+            ]);
+        }
+
+        // 2) PDFs -> stream original PDF
+        if (str_starts_with($mime, 'application/pdf')) {
+            return response()->file($full, [
+                'Content-Type' => 'application/pdf',
+            ]);
+        }
+
+        // 3) Text -> render a one-page PDF
+        if (str_starts_with($mime, 'text/')) {
+            $tmp = $this->makeTempPdfForText($full, $title);
+            return response()->file($tmp, ['Content-Type' => 'application/pdf']);
+        }
+
+        // 4) Others -> placeholder one-page PDF
+        $tmp = $this->makeTempPdfPlaceholder($title, $mime);
+        return response()->file($tmp, ['Content-Type' => 'application/pdf']);
     }
 }
