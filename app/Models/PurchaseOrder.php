@@ -11,24 +11,24 @@ class PurchaseOrder extends Model
     protected $table = 'po_sheets';
     protected $fillable = [
         'user_id',
-        'company_name',
         'po_number',
         'po_date',
-        'vendor',
-        'npwp',
         'address',
         'ppn_rate',
         'tax_kind',
-        'prepared_by',
+        'status',
         'sup_company',
         'sup_address',
         'sup_phone',
         'sup_email',
-        'sup_contact_person',
-        'sup_contact_phone',
-        'sup_contact_email',
-        'currency',
-        'status'
+        'sup_npwp',
+        'ship_to_address',
+        'ship_to_phone',
+        'payment_terms',
+        'delivery_time',
+        'delivery_terms',
+        'ship_to_recipient',
+        'conditions_terms',
     ];
     protected $casts = ['po_date' => 'date', 'ppn_rate' => 'float'];
     public function rows()
@@ -58,7 +58,6 @@ class PurchaseOrder extends Model
     {
         return $this->po_date?->format('Y-m-d');
     }
-    // optional pretty label
     public function getStatusLabelAttribute(): string
     {
         return match($this->status) {

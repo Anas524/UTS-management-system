@@ -48,7 +48,7 @@
     @endif
 
     {{-- Totals bar (uses $subtotalFils, $taxFils, $totalFils from controller) --}}
-    @php $fmtMoney = fn(int $f)=> 'IDR '.number_format($f/100, 2, '.', ','); @endphp
+    @php $fmtMoney = fn(int $n)=> 'IDR '.number_format($n, 0, ',', '.'); @endphp
     <div class="stats-wrap stats-inline">
       <div class="stat-card">
         <div class="stat-label">Subtotal</div>
@@ -76,7 +76,7 @@
             <th style="width:52px;" class="center">No</th>
             <th style="width:140px;">PO #</th>
             <th>Date</th>
-            <th>Supplier Name</th>
+            <th>Company Name</th>
             <th class="right">Subtotal</th>
             <th class="right">PPN / PPH %</th>
             <th class="right">Total</th>
@@ -87,36 +87,40 @@
         <tbody>
           @forelse($list as $po)
           @php
-          $fmt = fn($n) => 'IDR '.number_format((float)$n, 2, '.', ',');
+            $fmt = fn($n) => 'IDR '.number_format((int)$n, 0, ',', '.');
 
-          $vatRate = (float)($po->ppn_rate ?? $po->vat_rate ?? 0);
-          $vatTxt = rtrim(rtrim(number_format($vatRate, 2, '.', ''), '0'), '.');
+            $rate = (float)($po->ppn_rate ?? 0);
+            $rateTxt = rtrim(rtrim(number_format($rate, 2, '.', ''), '0'), '.');
 
-          // Subtotal in IDR (prefer withSum result)
-          $subtotalFils = isset($po->subtotal_fils) ? (int)$po->subtotal_fils : (int)($po->rows?->sum('amount') ?? 0);
-          $subtotalMajor = round($subtotalFils / 100, 2);
+            // Subtotal in IDR from rows: sum(price_aed * qty)
+            $subtotalIDR = ($po->rows ?? collect())->sum(function($r){
+              $unit = (int)($r->price_aed ?? 0);
+              $qty = (float)($r->qty ?? 0);
+              return (int) round($unit * $qty);
+            });
 
-          $vatAmount = round($subtotalMajor * $vatRate / 100, 2);
-          $totalMajor = round($subtotalMajor + $vatAmount, 2);
+            $kind = strtolower($po->tax_kind ?? 'ppn');
+            $taxIDR = ($kind === 'none') ? 0 : (int) round($subtotalIDR * $rate / 100);
+            $totalIDR = $subtotalIDR + $taxIDR;
 
-          $status = $po->status ?? 'open';
-          $badgeClass = match($status){
-          'closed' => 'badge badge-green',
-          'awaiting_response' => 'badge badge-amber',
-          'transferred' => 'badge badge-indigo',
-          default => 'badge badge-slate',
-          };
-          $statusText = $po->status_label; // uses accessor
-          $dateStr = $po->po_date ? \Illuminate\Support\Carbon::parse($po->po_date)->format('d-m-y') : '—';
+            $status = $po->status ?? 'open';
+            $badgeClass = match($status){
+              'closed' => 'badge badge-green',
+              'awaiting_response' => 'badge badge-amber',
+              'transferred' => 'badge badge-indigo',
+              default => 'badge badge-slate',
+            };
+            $statusText = $po->status_label; // accessor
+            $dateStr = $po->po_date ? \Illuminate\Support\Carbon::parse($po->po_date)->format('d-m-y') : '—';
           @endphp
           <tr>
             <td class="center">{{ $rowNoStart + $loop->index }}</td>
             <td>{{ $po->po_number ?? $po->id }}</td>
             <td>{{ $dateStr }}</td>
-            <td>{{ \Illuminate\Support\Str::limit($po->prepared_by ?? '—', 48) }}</td>
-            <td class="right">{{ $fmt($subtotalMajor) }}</td>
-            <td class="right">{{ $vatTxt }}% ({{ $fmt($vatAmount) }})</td>
-            <td class="right">{{ $fmt($totalMajor) }}</td>
+            <td>{{ \Illuminate\Support\Str::limit($po->sup_company ?? '—', 48) }}</td>
+            <td class="right">{{ $fmt($subtotalIDR) }}</td>
+            <td class="right">{{ $rateTxt }}% ({{ $fmt($taxIDR) }})</td>
+            <td class="right">{{ $fmt($totalIDR) }}</td>
             <td>
               <span class="{{ $badgeClass }}">{{ $statusText }}</span>
             </td>

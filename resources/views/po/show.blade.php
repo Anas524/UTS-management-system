@@ -2,19 +2,37 @@
 @section('title', 'Purchase Order #'.$po->po_number)
 
 @php
-    // Always show IDR now (ignore $po->currency)
-    $cur = 'IDR';
-    $fmtMoney = fn($n) => $cur.' '.number_format((float)$n, 2, '.', ',');
+// Always IDR integers with Indonesian grouping
+$fmtIDR = fn(int $n) => 'IDR '.number_format($n, 0, ',', '.');
 
-    $rows = $po->rows ?? collect();
-    $subtotal = $rows->sum(function($r){
-        $qty  = (float)($r->qty ?? 0);
-        $unit = is_null($r->price_aed) ? 0 : ((int)$r->price_aed)/100; // stored in "price_aed" cents
-        return $qty * $unit;
-    });
-    $rate   = (float)($po->ppn_rate ?? 0);
-    $ppn    = round($subtotal * $rate / 100, 2);
-    $total  = $subtotal + $ppn;
+// Safe int parser (handles "3.000" or 3000)
+$toInt = fn($v) => (int) preg_replace('/[^\d]/', '', (string) $v);
+
+$rows = $po->rows ?? collect();
+
+// Subtotal in IDR = sum(unit * qty)
+$subtotalIDR = $rows->sum(function ($r) use ($toInt) {
+$unit = $toInt($r->price_aed ?? 0); // stored as IDR integer; robust if string with dots
+$qty = (float) ($r->qty ?? 0);
+return (int) round($unit * $qty);
+});
+
+$kind = strtolower($po->tax_kind ?? 'ppn');
+$rate = (float) ($po->ppn_rate ?? 0);
+$taxIDR = $kind === 'none' ? 0 : (int) round($subtotalIDR * $rate / 100);
+$totalIDR = $subtotalIDR + $taxIDR;
+
+$rateTxt = rtrim(rtrim(number_format($rate, 2, '.', ''), '0'), '.');
+
+// Labels
+$names = [
+'ppn' => ['short' => 'PPN', 'full' => 'Pajak Pertambahan Nilai'],
+'pph' => ['short' => 'PPH', 'full' => 'Pajak Penghasilan'],
+'none' => null,
+];
+if (!isset($names[$kind])) $kind = 'ppn';
+$entry = $names[$kind];
+$taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%') : '';
 @endphp
 
 @section('content')
@@ -66,10 +84,6 @@
             @csrf @method('PATCH')
             <div class="admin-grid">
                 <div class="field-row">
-                    <label>Supplier Name</label>
-                    <input name="prepared_by" class="po-input" value="{{ old('prepared_by',$po->prepared_by) }}">
-                </div>
-                <div class="field-row">
                     <label>PO Number</label>
                     <input name="po_number" class="po-input" value="{{ old('po_number',$po->po_number) }}">
                 </div>
@@ -77,37 +91,47 @@
                     <label>Date</label>
                     <input type="date" name="po_date" class="po-input" value="{{ old('po_date', $po->po_date_for_input) }}">
                 </div>
-                <div class="field-row field-row--tax">
+                <div class="field-row field-row--taxdd">
                     <label>Tax</label>
 
-                    <div class="tax-inline">
-                        {{-- VAT "chip" as a read-only input so it skins like the others --}}
-                        <input
-                            type="text"
-                            class="po-input"
-                            value="PPN / PPH"
-                            readonly
-                            tabindex="-1"
-                            aria-label="Tax type">
+                    <div class="taxdd-inline">
+                        <!-- custom dropdown (hidden value + trigger + menu) -->
+                        @php
+                        $taxKindVal = strtolower(old('tax_kind', $po->tax_kind ?? 'ppn'));
+                        $taxKindLabel = $taxKindVal === 'ppn' ? 'PPN — Pajak Pertambahan Nilai'
+                        : ($taxKindVal === 'pph' ? 'PPH — Pajak Penghasilan'
+                        : ($taxKindVal === 'none' ? 'No Tax' : 'PPN / PPH'));
+                        $rateDefault = old('ppn_rate', $po->ppn_rate ?? 0);
+                        @endphp
 
-                        {{-- Rate + % using the existing .input-group flex styles (already in your CSS) --}}
+                        <div class="tax-actions">
+                            <input type="hidden" name="tax_kind" id="tax-kind" value="{{ $taxKindVal }}">
+                            <button type="button" class="tax-trigger" aria-haspopup="menu" aria-expanded="false">
+                                <span id="tax-kind-label">{{ $taxKindLabel }}</span>
+                                <svg class="tax-caret" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                                    <path d="M5 7l5 6 5-6" fill="none" stroke="currentColor" stroke-width="2" />
+                                </svg>
+                            </button>
+
+                            <div class="tax-menu" role="menu" aria-label="Tax menu">
+                                <button class="tax-item" role="menuitem" data-val="ppn">PPN — Pajak Pertambahan Nilai</button>
+                                <button class="tax-item" role="menuitem" data-val="pph">PPH — Pajak Penghasilan</button>
+                                <button class="tax-item" role="menuitem" data-val="none">No Tax</button>
+                            </div>
+                        </div>
+
+                        <!-- rate + percent -->
                         <div class="input-group">
                             <input
+                                id="ppnRate"
                                 name="ppn_rate"
                                 type="number"
                                 step="0.01"
                                 class="po-input"
-                                value="{{ old('ppn_rate', $po->ppn_rate ?? 0) }}"
+                                value="{{ $rateDefault }}"
                                 placeholder="0"
-                                aria-label="VAT rate">
-
-                            <input
-                                type="text"
-                                class="po-input"
-                                value="%"
-                                readonly
-                                tabindex="-1"
-                                aria-hidden="true"
+                                aria-label="Tax rate">
+                            <input type="text" class="po-input" value="%" readonly tabindex="-1" aria-hidden="true"
                                 style="width:52px; text-align:center">
                         </div>
                     </div>
@@ -126,10 +150,10 @@
                 <label>Status</label>
 
                 <div class="status-actions">
-                    <input type="hidden" name="status" id="po-status" value="{{ $po->status ?? 'open' }}">
+                    <input type="hidden" name="status" id="po-status" value="{{ $statusVal }}">
 
                     <button type="button" class="status-trigger" aria-haspopup="menu" aria-expanded="false">
-                        <span id="po-status-label">{{ ucfirst(str_replace('_',' ', $po->status ?? 'open')) }}</span>
+                        <span id="po-status-label">{{ $statusLabel }}</span>
                         <svg class="status-caret" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
                             <path d="M5 7l5 6 5-6" fill="none" stroke="currentColor" stroke-width="2" />
                         </svg>
@@ -162,35 +186,53 @@
                         <label>E-mail
                             <input type="email" name="sup_email" class="po-input" value="{{ old('sup_email',$po->sup_email) }}" form="poHdrForm">
                         </label>
-                        <label>Contact Person
-                            <input type="text" name="sup_contact_person" class="po-input" value="{{ old('sup_contact_person',$po->sup_contact_person) }}" form="poHdrForm">
-                        </label>
-                        <label>Contact Phone
-                            <input type="text" name="sup_contact_phone" class="po-input" value="{{ old('sup_contact_phone',$po->sup_contact_phone) }}" form="poHdrForm">
-                        </label>
-                        <label>Contact Email
-                            <input type="email" name="sup_contact_email" class="po-input" value="{{ old('sup_contact_email',$po->sup_contact_email) }}" form="poHdrForm">
+                        <label>NPWP
+                            <input type="text" name="sup_npwp" class="po-input" value="{{ old('sup_npwp',$po->sup_npwp) }}" form="poHdrForm">
                         </label>
                     </div>
                 </div>
 
                 <div class="po-box">
-                    <div class="po-box-title">Payment / Delivery</div>
-                    <div class="po-box-read">
-                        <div class="po-read-row">
-                            <div class="po-read-label">Payment Terms</div>
-                            <div class="po-read-value">100% Advance payment to be made in bank before dispatch of delivery.</div>
-                        </div>
-                        <div class="po-read-row">
-                            <div class="po-read-label">Delivery Time</div>
-                            <div class="po-read-value">14 working days from the date of payment</div>
-                        </div>
-                        <div class="po-read-row">
-                            <div class="po-read-label">Delivery Terms</div>
-                            <div class="po-read-value">Ex-works Dubai</div>
-                        </div>
+                    <div class="po-box-title">Ship To (PT. UNIVERSAL TRADE SERVICES)</div>
+                    <div class="po-box-grid">
+                        <label>Recipient
+                            <input type="text" name="ship_to_recipient" class="po-input" form="poHdrForm" value="{{ old('ship_to_recipient', $po->ship_to_recipient) }}">
+                        </label>
+
+                        <label>Address
+                            <textarea name="ship_to_address" rows="2" class="po-input" form="poHdrForm">{{ old('ship_to_address', $po->ship_to_address) }}</textarea>
+                        </label>
+
+                        <label>Phone
+                            <input type="text" name="ship_to_phone" class="po-input" value="{{ old('ship_to_phone', $po->ship_to_phone) }}" form="poHdrForm">
+                        </label>
+                    </div>
+                    <div class="po-box-title" style="margin-top: 20px;">Payment / Delivery</div>
+                    <div class="po-box-grid">
+                        <label>Payment Terms
+                            <textarea name="payment_terms" rows="2" class="po-input" form="poHdrForm">{{ old('payment_terms', $po->payment_terms ?? '100% Advance payment to be made in bank before dispatch of delivery.') }}</textarea>
+                        </label>
+
+                        <label>Delivery Time
+                            <input type="text" name="delivery_time" class="po-input" value="{{ old('delivery_time', $po->delivery_time ?? '14 working days from the date of payment') }}" form="poHdrForm">
+                        </label>
+
+                        <label>Delivery Terms
+                            <input type="text" name="delivery_terms" class="po-input" value="{{ old('delivery_terms', $po->delivery_terms ?? 'Ex-works Dubai') }}" form="poHdrForm">
+                        </label>
                     </div>
                 </div>
+            </div>
+
+            <div class="po-box" style="margin-top: 16px;">
+                <div class="po-box-title">Conditions &amp; Terms</div>
+                <label>
+                    <small>
+                        Paste any plain text. We’ll show it exactly as you type (numbers, hyphens, or bullets).
+                        Press Enter for a new line; leave a blank line for a paragraph gap.
+                    </small>
+                    <textarea name="conditions_terms" rows="5" class="po-input" form="poHdrForm" style="margin-top: 10px;">{{ old('conditions_terms', $po->conditions_terms) }}</textarea>
+                </label>
             </div>
         </form>
 
@@ -209,10 +251,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @php $canUpdate = auth()->user()->can('update', $po); @endphp
-
                     @forelse($rows->values() as $i => $r)
-                    @php $amt = (int)$r->price_idr * (int)($r->qty ?: 0); @endphp
                     <tr data-row-id="{{ $r->id }}">
                         <td class="center">{{ $i + 1 }}</td>
 
@@ -233,14 +272,18 @@
                         </td>
 
                         <td class="right">
-                            <input name="price_aed"
+                            <input
+                                name="price_aed"
                                 class="po-input js-aed"
-                                inputmode="decimal"
+                                inputmode="numeric"
                                 form="row-{{ $r->id }}"
-                                value="{{ $r->price_aed !== null ? 'IDR '.number_format($r->price_aed/100,2,'.',',') : '' }}">
+                                value="{{ $r->price_aed !== null ? number_format($r->price_aed, 0, ',', '.') : '' }}">
                         </td>
 
-                        <td class="right amount-aed">IDR 0.00</td>
+                        @php
+                        $amt = (int) $toInt($r->price_aed ?? 0) * (float)($r->qty ?: 0);
+                        @endphp
+                        <td class="right amount-aed">{{ $fmtIDR((int) round($amt)) }}</td>
 
                         <td class="right">
                             <div class="icon-actions">
@@ -290,20 +333,19 @@
                 <tfoot>
                     <tr>
                         <th colspan="6" class="right">Subtotal</th>
-                        <th class="right" id="ftSubtotal">{{ $fmtMoney($subtotal) }}</th>
+                        <th class="right" id="ftSubtotal">{{ $fmtIDR($subtotalIDR) }}</th>
                         <th></th>
                     </tr>
-                    <tr>
-                        @php
-                        $rateTxt = rtrim(rtrim(number_format((float)($po->ppn_rate ?? 0),2,'.',''), '0'), '.');
-                        @endphp
-                        <th colspan="6" class="right" id="ftTaxLabel">TAX {{ $rateTxt }}%</th>
-                        <th class="right" id="ftTax">{{ $fmtMoney($ppn) }}</th>
+
+                    <tr id="taxRow" class="{{ $kind==='none' ? 'is-hidden' : '' }}">
+                        <th colspan="6" class="right" id="ftTaxLabel">{{ $taxLabelFull }}</th>
+                        <th class="right" id="ftTax">{{ $fmtIDR($taxIDR) }}</th>
                         <th></th>
                     </tr>
+
                     <tr>
                         <th colspan="6" class="right">Total</th>
-                        <th class="right" id="ftTotal">{{ $fmtMoney($total) }}</th>
+                        <th class="right" id="ftTotal">{{ $fmtIDR($totalIDR) }}</th>
                         <th></th>
                     </tr>
                 </tfoot>
@@ -320,17 +362,16 @@
                 data-csrf="{{ csrf_token() }}">+ Add row</button>
         </div>
         @php
-            $totalInt = (int) floor($total);
-            try {
-                if (!class_exists(\NumberFormatter::class)) throw new \Exception('intl missing');
-                $fmt = new \NumberFormatter('id', \NumberFormatter::SPELLOUT);
-                $words = $fmt->format($totalInt);
-                if ($words === false) throw new \Exception('spellout failed');
-                $amountWords = ucfirst($words) . ' rupiah';
-            } catch (\Throwable $e) {
-                // Indo grouping style for fallback
-                $amountWords = 'IDR ' . number_format($totalInt, 0, ',', '.');
-            }
+        $totalInt = (int) $totalIDR;
+        try {
+        if (!class_exists(\NumberFormatter::class)) throw new \Exception('intl missing');
+        $fmt = new \NumberFormatter('id', \NumberFormatter::SPELLOUT);
+        $words = $fmt->format($totalInt);
+        if ($words === false) throw new \Exception('spellout failed');
+        $amountWords = ucfirst($words).' rupiah';
+        } catch (\Throwable $e) {
+        $amountWords = $fmtIDR($totalInt);
+        }
         @endphp
 
         <div class="sheet-summary" style="grid-template-columns: 1fr;">
@@ -343,37 +384,15 @@
         </div>
 
         @php
-            $supplierBrand = trim((string)($po->sup_company ?? ''));
-            if ($supplierBrand === '') $supplierBrand = 'the Supplier';
+        $terms = (string) ($po->conditions_terms ?? '');
         @endphp
 
-        <div class="sum-item" style="margin-top:10px;">
-            <div class="sum-label" style="margin-bottom:6px;">Conditions and terms</div>
-            <ul class="readflat" style="margin:0; padding-left:18px;">
-                <li>
-                    Universal Trade Services will not be responsible for any additional cost other than the one
-                    mentioned in the Purchase Order.
-                </li>
-
-                <li>The Purchase Order is in accordance with the relevant laws, regulations, and national standards of the United Arab Emirates.</li>
-
-                <li>
-                    In case of work completion delayed by the failure on the part of the {{ $supplierBrand }}
-                    in the time specified and agreed, The {{ $supplierBrand }} is not liable to pay delay penalty to
-                    Universal Trade Services.
-                </li>
-
-                <li>
-                    We certify the purchase has been made from authorized source which is directly manufacturer
-                    {{ $supplierBrand }} and product supplied by the original manufacturer. The purchase is made by
-                    Universal Trade Services who intend to resell as authorized reseller.
-                </li>
-
-                <li>All works shall be carried out in strict accordance with all relevant HSE legislation all the time.</li>
-
-                <li>Universal Trade Services has reserved the right to terminate this agreement because of the delays or quality.</li>
-            </ul>
+        @if(trim($terms) !== '')
+        <div class="po-box" style="margin-top:16px;">
+            <div class="po-box-title">Conditions &amp; Terms</div>
+            <div class="terms-plain">{{ $terms }}</div>
         </div>
+        @endif
 
         <div class="sheet-toolbar" style="justify-content: flex-end;">
             <form id="deletePoForm" action="{{ route('po.destroy', $po) }}" method="POST">

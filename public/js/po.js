@@ -2,11 +2,22 @@
 (function ($) {
     // ---------- helpers ----------
 
+    function labelForKind(kind) {
+        switch (String(kind || '').toLowerCase()) {
+            case 'none': return ''; // hidden row
+            case 'pph': return 'Pajak Penghasilan (PPH)';
+            case 'ppn': return 'Pajak Pertambahan Nilai (PPN)';
+            default: return 'PPN'; // safe fallback
+        }
+    }
+
     function setTaxLabel(kind, rate) {
-        const clean = (Number(rate) || 0)
+        const cleanRate = (Number(rate) || 0)
             .toLocaleString('en-US', { maximumFractionDigits: 2 })
             .replace(/\.00$/, '');
-        $('#ftTaxLabel').text('TAX ' + clean + '%');
+        const title = labelForKind(kind);
+        // When hidden we won’t see this anyway, but keep it correct:
+        $('#ftTaxLabel').text((title ? title + ' ' : '') + cleanRate + '%');
     }
 
     function recalcCurrencyRow($tr) {
@@ -14,7 +25,7 @@
         const unit = parseFloat(normalizeMoneyStr($tr.find('input[name*="[price_aed]"], input[name="price_aed"]').val())) || 0;
         const total = qty * unit;
         $tr.find('.amount-aed').text(
-            'IDR ' + total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            'IDR ' + total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
         );
     }
 
@@ -40,13 +51,28 @@
         return words.join(' ');
     }
 
+    // Safe normalizer (in case it doesn’t exist on this page)
+    if (typeof normalizeMoneyStr !== 'function') {
+        function normalizeMoneyStr(s) {
+            if (s == null) return '0';
+            s = String(s).replace(/[^\d,.\- ,]/g, '').trim();
+            if (s.includes(',') && !s.includes('.')) {
+                // "12,34" -> "12.34"
+                s = s.replace(',', '.');
+            } else {
+                // remove thousands commas
+                s = s.replace(/,/g, '');
+            }
+            return s || '0';
+        }
+    }
+
     function recalc() {
         let subtotal = 0;
 
         const fmtIDR = v =>
             'IDR ' + Number(v || 0).toLocaleString('en-US', {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2
+                minimumFractionDigits: 0, maximumFractionDigits: 0
             });
 
         $('#poRowsTbl tbody tr').each(function () {
@@ -67,16 +93,50 @@
             $tr.find('.amount-aed').text(fmtIDR(rowTotal));
         });
 
+        const kind = ($('input[name="tax_kind"], select[name="tax_kind"]').val() || 'ppn').toLowerCase();
         const rate = Number($('input[name="ppn_rate"]').val() || 0);
-        const tax = subtotal * rate / 100;
+
+        // keep the label synced (PPN / PPH X%)
+        setTaxLabel(kind, rate);
+
+        // toggle tax row visibility
+        if (kind === 'none') { $('#taxRow').addClass('is-hidden'); }
+        else { $('#taxRow').removeClass('is-hidden'); }
+
+        const tax = (kind === 'none') ? 0 : (subtotal * rate / 100);
         const total = subtotal + tax;
 
         $('#ftSubtotal').text(fmtIDR(subtotal));
         $('#ftTax').text(fmtIDR(tax));
         $('#ftTotal').text(fmtIDR(total));
 
-        updateAmountWordsAED(total);
+        if (typeof updateAmountWordsAED === 'function') {
+            updateAmountWordsAED(total);
+        }
     }
+
+    // Live bindings (call once on DOM ready)
+    $(document).on('input change', 'input[name="ppn_rate"]', function () {
+        recalc();
+    });
+
+    // Recalc when qty / price change (delegated so new rows work too)
+    $(document).on(
+        'input change',
+        '#poRowsTbl input[name="price_aed"], #poRowsTbl input[name*="[price_aed]"], ' +
+        '#poRowsTbl input[name="qty"], #poRowsTbl input[name*="[qty]"]',
+        recalc
+    );
+
+    // Tax kind select: just recalc
+    $(document).on('change', 'select[name="tax_kind"]', function () {
+        recalc();
+    });
+
+    // On load: just recalc once
+    $(function () {
+        recalc();
+    });
 
     function numberToWordsID(n) {
         n = Math.floor(Math.abs(Number(n) || 0));
@@ -111,13 +171,6 @@
         function () { this.value = prettyAED(this.value); recalc(); }
     );
 
-    function normalizeMoneyStr(s) {
-        if (!s) return '';
-        s = String(s).replace(/[^\d.,-]/g, '');
-        if (s.includes(',') && !s.includes('.')) s = s.replace(',', '.'); else s = s.replace(/,/g, '');
-        return s;
-    }
-
     function applyPreparedNameToPage(name) {
         const clean = (name || '').trim();
         document.querySelectorAll('.js-prep').forEach(el => {
@@ -125,14 +178,6 @@
             el.textContent = clean !== '' ? clean : fallback;
         });
     }
-
-    // Common live bindings
-    $(document)
-        .on('input',
-            '#poRowsTbl input[name="price_aed"], #poRowsTbl input[name*="[price_aed]"], ' +
-            '#poRowsTbl input[name="qty"], #poRowsTbl input[name*="[qty]"], input[name="ppn_rate"]',
-            recalc)
-        .on('change', 'select[name="tax_kind"]', recalc);
 
     $(document).on('input blur',
         '#poRowsTbl input[name="price_aed"], #poRowsTbl input[name*="[price_aed]"], ' +
@@ -144,6 +189,20 @@
     const isCreate = $('#poCreateForm').length > 0;
     if (isCreate) {
 
+        // ---- Company Name anti-autofill sync ----
+        const $supVis = $('#supCompanyVis');
+        const $supHid = $('#supCompany');
+
+        // initial mirror (for old() values)
+        if ($supVis.length && $supHid.length && !$supVis.val()) {
+            $supVis.val($supHid.val() || '');
+        }
+
+        // keep hidden in sync on typing/paste/pick
+        $supVis.on('input change', function () {
+            $supHid.val($(this).val() || '');
+        });
+
         const $tbody = $('#poRowsTbl tbody');
 
         // --- per-row currency total ---
@@ -152,7 +211,7 @@
             const unit = parseFloat(normalizeMoneyStr($tr.find('input[name*="[price_aed]"]').val())) || 0;
             const total = qty * unit;
             $tr.find('.amount-aed').text(
-                'IDR ' + total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                'IDR ' + total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
             );
         }
 
@@ -216,152 +275,179 @@
             });
         });
 
-        // === AUTOFILL FROM PREVIOUS POs (Supplier / PO Number) ===
-        // Requires the Blade to add:
-        //  - <input id="fldSupplier"> + <div id="supMenu" class="po-autolist" hidden></div>
-        //  - <input id="fldPoNumber"> + <div id="poMenu"  class="po-autolist" hidden></div>
-        //  - #poCreateForm has data-find-url and data-get-url
-
-        (function initPoAutofill() {
+        // === AUTOFILL FROM PREVIOUS POs (Company Name) ===
+        (function initSupplierTypeahead() {
             const $form = $('#poCreateForm');
             const findURL = $form.data('find-url');
             const getURL = $form.data('get-url');
-            if (!findURL || !getURL) return; // guard if not present
+            if (!findURL) return;
 
-            const $fldSupplier = $('#fldSupplier');
-            const $fldPoNumber = $('#fldPoNumber');
-            const $supMenu = $('#supMenu');
-            const $poMenu = $('#poMenu');
+            const $supVis = $('#supCompanyVis');
+            const $supHid = $('#supCompany');
+            const $menu = $('#supMenu');
+            const $tbody = $('#poRowsTbl tbody');
 
-            // Helpers
-            const fmtIDR = v => 'IDR ' + Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-            const escapeAttr = s => String(s ?? '').replace(/"/g, '&quot;');
-            const nl2 = s => String(s ?? '').replace(/</g, '&lt;');
-
-            function renderList($menu, results, onPick) {
-                const html = (results && results.length ? results : [{ id: '', _no: true, prepared_by: 'No matches' }])
-                    .map(r => {
-                        if (r._no) return `<div class="item" data-id="">${r.prepared_by}</div>`;
-                        const line1 = r.po_number ? r.po_number : (r.prepared_by || '');
-                        const line2 = [r.prepared_by, r.po_number, r.po_date].filter(Boolean).join(' • ');
-                        return `<div class="item" data-id="${r.id}">
-                                    <div>
-                                        <div>${line1}</div>
-                                        <div class="meta">${line2}</div>
-                                    </div>
-                                </div>`;
-                    }).join('');
-                $menu.html(html).prop('hidden', false);
-                $menu.find('.item').on('click', function () {
-                    const id = $(this).data('id');
-                    if (!id) { $menu.prop('hidden', true); return; }
-                    onPick(id);
-                });
-            }
-
-            function clearRows() { $tbody.empty(); }
-
-            function addRowFromData(r, i) {
-                const qty = Number(r.qty ?? 0);
-                const priceFils = parseInt(r.price_aed ?? 0, 10);     // backend cents
-                const unitIDR = Math.round(priceFils / 100);        // -> whole rupiah number for create form
-                const amount = Math.round(unitIDR * qty);
-
-                const rowHtml = `
-      <tr>
-        <td class="center col-no row-no">${i + 1}</td>
-        <td class="col-sku"><input name="rows[${i + 1}][sku]" class="po-input" value="${escapeAttr(r.sku)}"></td>
-        <td class="col-brand"><input name="rows[${i + 1}][brand]" class="po-input" value="${escapeAttr(r.brand)}"></td>
-        <td class="col-desc"><textarea name="rows[${i + 1}][description]" rows="1" class="po-input">${nl2(r.description)}</textarea></td>
-        <td class="right col-qty"><input name="rows[${i + 1}][qty]" class="po-input" value="${qty || ''}"></td>
-        <td class="right col-unitprice"><input name="rows[${i + 1}][price_aed]" class="po-input js-aed" inputmode="decimal" value="${unitIDR || ''}"></td>
-        <td class="right col-total amount-aed">${fmtIDR(amount)}</td>
-        <td class="right col-actions">
-          <button type="button" class="attach-btnmini danger js-del-row">Remove</button>
-        </td>
-      </tr>`;
-                const $row = $(rowHtml);
-                $tbody.append($row);
-                // reuse your existing per-row calc to keep UI consistent
-                (function recalcCreateRow($tr) {
-                    const q = parseFloat(($tr.find('input[name*="[qty]"]').val() || '').replace(',', '.')) || 0;
-                    const u = parseFloat(normalizeMoneyStr($tr.find('input[name*="[price_aed]"]').val())) || 0;
-                    const t = q * u;
-                    $tr.find('.amount-aed').text('IDR ' + t.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-                })($row);
-            }
-
-            // Fill header inputs from payload
-            function fillHeader(po) {
-                function set(name, v) { const $el = $form.find(`[name="${name}"]`); if ($el.length) { $el.val(v ?? ''); } }
-                if (po.prepared_by != null) $fldSupplier.val(po.prepared_by);
-                if (po.po_number != null) $fldPoNumber.val(po.po_number);
-
-                set('po_date', po.po_date ?? '');
-                set('npwp', po.npwp ?? '');
-                set('ppn_rate', po.ppn_rate ?? 0);
-                set('address', po.address ?? '');
-
-                set('sup_company', po.sup_company ?? '');
-                set('sup_address', po.sup_address ?? '');
-                set('sup_phone', po.sup_phone ?? '');
-                set('sup_email', po.sup_email ?? '');
-                set('sup_contact_person', po.sup_contact_person ?? '');
-                set('sup_contact_phone', po.sup_contact_phone ?? '');
-                set('sup_contact_email', po.sup_contact_email ?? '');
-            }
-
-            // Server calls
-            function apiFind(q, type) {
+            function apiFind(q) {
                 return $.ajax({
-                    url: $('#poCreateForm').data('find-url'),
-                    data: { q: q || '', type },
+                    url: findURL,
+                    data: { q: q || '', type: 'supplier' },
                     headers: { 'X-Requested-With': 'XMLHttpRequest' }
-                }).then(res => Array.isArray(res) ? res : []).catch(() => []);
+                }).then(r => Array.isArray(r) ? r : []).catch(() => []);
             }
+
             function apiGet(id) {
-                return $.getJSON(getURL, { id }).then(r => r);
+                if (!getURL || !id) return Promise.resolve(null);
+                return $.ajax({
+                    url: getURL,
+                    data: { id },
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                }).catch(() => null);
             }
 
-            async function pick(id) {
-                try {
-                    const data = await apiGet(id);
-                    const po = data.po ?? data;
-                    const rows = data.rows ?? po.rows ?? [];
+            function renderList(list) {
+                const items = list.length ? list : [{ _no: true, sup_company: 'No matches' }];
+                const html = items.map(r => r._no
+                    ? `<div class="item" data-id="">${r.sup_company}</div>`
+                    : `<div class="item"
+                        data-id="${r.id}"
+                        data-sup_company="${(r.sup_company || '').replace(/"/g, '&quot;')}"
+                        data-sup_address="${(r.sup_address || '').replace(/"/g, '&quot;')}"
+                        data-sup_phone="${(r.sup_phone || '').replace(/"/g, '&quot;')}"
+                        data-sup_email="${(r.sup_email || '').replace(/"/g, '&quot;')}"
+                        data-sup_npwp="${(r.sup_npwp || '').replace(/"/g, '&quot;')}">
+                        <div>${r.sup_company || ''}</div>
+                        ${r.po_date || r.po_number ? `<div class="meta">${[r.po_date, r.po_number].filter(Boolean).join(' • ')}</div>` : ''}
+                    </div>`
+                ).join('');
+                $menu.html(html).prop('hidden', false);
+            }
 
-                    fillHeader(po);
-                    clearRows();
-                    rows.forEach((r, i) => addRowFromData(r, i));
+            function fillSupplierOnly(p) {
+                $supVis.val(p.sup_company || '');
+                $supHid.val(p.sup_company || '');
+                $('[name="sup_address"]').val(p.sup_address || '');
+                $('[name="sup_phone"]').val(p.sup_phone || '');
+                $('[name="sup_email"]').val(p.sup_email || '');
+                $('[name="sup_npwp"]').val(p.sup_npwp || '');
+            }
 
-                    // Recalc footers from current DOM using your existing recalc()
-                    recalc();
-                } finally {
-                    $supMenu.prop('hidden', true);
-                    $poMenu.prop('hidden', true);
+            // Format IDR integer to a user-typed value (we keep it plain; blur will pretty it)
+            function idrIntToInput(n) {
+                n = Number(n || 0);
+                return String(n);
+            }
+
+            // Put PO payload into the CREATE form
+            function fillEntireForm(payload) {
+                if (!payload || !payload.po) return;
+
+                const po = payload.po;
+                // --- Header ---
+                $('input[name="po_number"]').val(po.po_number || ''); // keep if you want duplicate-friendly; else set ''
+                $('input[name="po_date"]').val(po.po_date || '');
+                $('input[name="address"]').val(po.address || '');
+                $('input[name="ppn_rate"]').val(po.ppn_rate ?? 0);
+
+                // Tax kind (hidden input + visible label)
+                const kind = (po.tax_kind || 'ppn').toLowerCase();
+                $('input[name="tax_kind"]').val(kind);
+                const $kindItem = $('.tax-menu .tax-item').removeClass('is-active')
+                    .filter(`[data-val="${kind}"]`).addClass('is-active');
+                $('#tax-kind-label').text($kindItem.text() || 'PPN / PPH');
+
+                // Status (hidden input + label)
+                if (po.status) {
+                    $('input[name="status"]').val(po.status);
+                    $('#po-status-label').text(
+                        po.status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+                    );
+                    $('.status-menu .status-item').removeClass('is-active')
+                        .filter(`[data-val="${po.status}"]`).addClass('is-active');
                 }
+
+                // --- Supplier (left box) ---
+                $supVis.val(po.sup_company || '');
+                $supHid.val(po.sup_company || '');
+                $('[name="sup_address"]').val(po.sup_address || '');
+                $('[name="sup_phone"]').val(po.sup_phone || '');
+                $('[name="sup_email"]').val(po.sup_email || '');
+                $('[name="sup_npwp"]').val(po.sup_npwp || '');
+
+                // --- Ship To ---
+                $('[name="ship_to_recipient"]').val(po.ship_to_recipient || '');
+                $('[name="ship_to_address"]').val(po.ship_to_address || '');
+                $('[name="ship_to_phone"]').val(po.ship_to_phone || '');
+
+                // --- Payment / Delivery ---
+                $('[name="payment_terms"]').val(po.payment_terms || '');
+                $('[name="delivery_time"]').val(po.delivery_time || '');
+                $('[name="delivery_terms"]').val(po.delivery_terms || '');
+                $('[name="conditions_terms"]').val(po.conditions_terms || '');
+
+                // --- Rows ---
+                $tbody.empty();
+                const rows = Array.isArray(payload.rows) ? payload.rows : [];
+                rows.forEach(r => {
+                    addCreateRow({
+                        sku: r.sku || '',
+                        brand: r.brand || '',
+                        description: r.description || '',
+                        qty: r.qty ?? '',
+                        price_aed: idrIntToInput(r.price_aed) // plain int; blur will format, recalc will total
+                    });
+                });
+
+                // Recalc totals + words
+                $('#poRowsTbl tbody tr').each(function () { recalcCurrencyRow($(this)); });
+                recalc();
             }
 
-            // Search on focus and input (Supplier)
-            $fldSupplier.on('focus input', async function () {
-                const q = $(this).val().trim();
-                const res = await apiFind(q, 'supplier');
-                renderList($supMenu, res, pick);
+            // open on focus (recent)
+            $supVis.on('focus', async function () {
+                renderList(await apiFind(''));
             });
 
-            // Search on focus and input (PO number)
-            $fldPoNumber.on('focus input', async function () {
-                const q = $(this).val().trim();
-                const res = await apiFind(q, 'number');
-                renderList($poMenu, res, pick);
+            // filter on input
+            const debounce = (f, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; };
+            $supVis.on('input', debounce(async function () {
+                renderList(await apiFind($(this).val().trim()));
+            }, 150));
+
+            // pick
+            $menu.on('click', '.item', async function () {
+                const id = $(this).data('id');
+                if (!id) { $menu.prop('hidden', true); return; }
+
+                // Fill supplier fields immediately for snappy UX…
+                fillSupplierOnly({
+                    sup_company: $(this).data('sup_company') || '',
+                    sup_address: $(this).data('sup_address') || '',
+                    sup_phone: $(this).data('sup_phone') || '',
+                    sup_email: $(this).data('sup_email') || '',
+                    sup_npwp: $(this).data('sup_npwp') || '',
+                });
+
+                // …then fetch full PO and hydrate the whole form
+                const full = await apiGet(id);
+                if (full) fillEntireForm(full);
+
+                $menu.prop('hidden', true);
             });
 
-            // Click outside to close menus
-            $(document).on('click', function (e) {
-                if (!$supMenu.is(e.target) && $supMenu.has(e.target).length === 0 && e.target !== $fldSupplier[0]) $supMenu.prop('hidden', true);
-                if (!$poMenu.is(e.target) && $poMenu.has(e.target).length === 0 && e.target !== $fldPoNumber[0]) $poMenu.prop('hidden', true);
+            // Close on ESC
+            $supVis.on('keydown', function (e) {
+                if (e.key === 'Escape') { $menu.prop('hidden', true); this.blur(); }
             });
+
+            // Delay close on blur (so menu clicks register)
+            $supVis.on('blur', function () { setTimeout(() => $menu.prop('hidden', true), 120); });
+
+            // Keep hidden value synced on manual typing
+            if ($supVis.length && $supHid.length && !$supVis.val()) {
+                $supVis.val($supHid.val() || '');
+            }
+            $supVis.on('input change', function () { $supHid.val($(this).val() || ''); });
         })();
-        // === /AUTOFILL FROM PREVIOUS POs ===
 
         // first empty row
         if ($tbody.find('tr').length === 0) addCreateRow();
@@ -474,32 +560,39 @@
         var payload = {
             _token: csrf,
             _method: 'PATCH',
-            prepared_by: $('input[name="prepared_by"]').val() || '',
+
             po_number: $('input[name="po_number"]').val() || '',
             po_date: $('input[name="po_date"]').val() || '',
-            vendor: $('input[name="vendor"]').val() || '',
-            npwp: $('input[name="npwp"]').val() || '',
-            address: $('input[name="address"]').val() || '',
+            address: ($('textarea[name="address"]').val() ?? $('input[name="address"]').val() ?? ''),
             ppn_rate: $('input[name="ppn_rate"]').val() || '',
-            tax_kind: $('select[name="tax_kind"]').val() || 'VAT',
+            tax_kind: $('input[name="tax_kind"], select[name="tax_kind"]').val() || 'ppn',
             status: $('input[name="status"]').val() || 'open',
+
             sup_company: $('input[name="sup_company"]').val() || '',
             sup_address: $('textarea[name="sup_address"]').val() || '',
             sup_phone: $('input[name="sup_phone"]').val() || '',
             sup_email: $('input[name="sup_email"]').val() || '',
-            sup_contact_person: $('input[name="sup_contact_person"]').val() || '',
-            sup_contact_phone: $('input[name="sup_contact_phone"]').val() || '',
-            sup_contact_email: $('input[name="sup_contact_email"]').val() || '',
-            currency: $('input[name="currency"], select[name="currency"]').val() || ''
+            sup_npwp: $('input[name="sup_npwp"]').val() || '',
+
+            // Ship To
+            ship_to_recipient: $('input[name="ship_to_recipient"]').val() || '',
+            ship_to_address: $('textarea[name="ship_to_address"]').val() || '',
+            ship_to_phone: $('input[name="ship_to_phone"]').val() || '',
+
+            // Payment / Delivery
+            payment_terms: $('textarea[name="payment_terms"]').val() || '',
+            delivery_time: $('input[name="delivery_time"]').val() || '',
+            delivery_terms: $('input[name="delivery_terms"]').val() || '',
+
+            // Conditions & Terms (textarea)
+            conditions_terms: $('textarea[name="conditions_terms"]').val() || '',
         };
 
         // 2) Collect ALL visible rows from the table
         payload.rows = [];
-        $('#poRowsTbl tbody tr').each(function (i, tr) {
-            var $tr = $(tr);
-            var id = $tr.data('row-id'); // from <tr data-row-id="...">
-
-            // read inputs bound to the per-row form, but values are in the DOM anyway
+        $('#poRowsTbl tbody tr').each(function () {
+            var $tr = $(this);
+            var id = $tr.data('row-id');
             var sku = $tr.find('input[name="sku"]').val() || '';
             var brand = $tr.find('input[name="brand"]').val() || '';
             var desc = $tr.find('textarea[name="description"]').val() || '';
@@ -508,26 +601,13 @@
 
             var aed = ($tr.find('input[name="price_aed"]').val() || '');
             aed = (aed + '').replace(/[^\d.,-]/g, '');
-            if (aed.indexOf(',') !== -1 && aed.indexOf('.') === -1) {
-                aed = aed.replace(',', '.');   // "12,34" -> "12.34"
-            } else {
-                aed = aed.replace(/,/g, '');   // drop thousands commas
-            }
+            if (aed.indexOf(',') !== -1 && aed.indexOf('.') === -1) aed = aed.replace(',', '.');
+            else aed = aed.replace(/,/g, '');
 
-            // keep this row if it has any meaningful content (match controller’s logic)
             var keep = $.trim(desc) !== '' || $.trim(qty) !== '' || $.trim(sku) !== '' || $.trim(brand) !== '';
             if (!keep) return;
 
-            var row = {
-                id: id || null,
-                sku: sku,
-                brand: brand,
-                description: desc,
-                price_aed: aed,        // string, server converts to cents
-                qty: qty,
-                unit: unit
-            };
-            payload.rows.push(row);
+            payload.rows.push({ id: id || null, sku, brand, description: desc, price_aed: aed, qty, unit });
         });
 
         // 3) POST via AJAX (so we don’t navigate away)
@@ -538,12 +618,48 @@
             url: url,
             method: 'POST',
             data: payload,
-            success: function (resp) {
-                applyPreparedNameToPage(payload.prepared_by);
-
+            success: function () {
                 recalc();
-                // success toast
-                // (optionally re-fetch rows or simply show a message + refresh totals)
+
+                const latest = $('textarea[name="conditions_terms"]').val() || '';
+
+                // ---- find (or create) the PREVIEW box (not the textarea block) ----
+                // we pick the .po-box whose title is exactly "Conditions & Terms"
+                // AND that does NOT contain the textarea (so we don't hit the input card)
+                let $wrap = $('.po-box').filter(function () {
+                    const $box = $(this);
+                    const title = $.trim($box.find('.po-box-title').first().text());
+                    const hasTextarea = $box.find('textarea[name="conditions_terms"]').length > 0;
+                    return title === 'Conditions & Terms' && !hasTextarea;
+                });
+
+                if (!$wrap.length && $.trim(latest) !== '') {
+                    // Create preview block right after the textarea card
+                    const $anchor = $('textarea[name="conditions_terms"]').closest('.po-box');
+                    $wrap = $(`
+                        <div class="po-box" id="termsBoxPreview" style="margin-top:16px;">
+                            <div class="po-box-title">Conditions &amp; Terms</div>
+                            <div id="termsPreview" class="terms-plain"></div>
+                        </div>
+                    `);
+                    $anchor.after($wrap);
+                }
+
+                // ---- update preview if present ----
+                const $preview = $wrap.find('#termsPreview');
+                if ($preview.length) {
+                    // .terms-plain has white-space: pre-wrap, so .text() preserves line breaks & spaces
+                    $preview.text(latest);
+
+                    // hide if empty, show otherwise
+                    if ($.trim(latest) === '') {
+                        $wrap.hide();
+                    } else {
+                        $wrap.show();
+                    }
+                }
+
+                // button UI
                 $btn.text('Saved ✓');
                 setTimeout(function () { $btn.prop('disabled', false).text('Save PO'); }, 800);
             },
@@ -661,26 +777,23 @@
         e.preventDefault(); e.stopPropagation();
         $(this).removeClass('is-hover');
     });
+    let poattDroppedFiles = null;
     $(document).on('drop', '#poatt-drop', function (e) {
         const dt = e.originalEvent.dataTransfer;
-        if (dt && dt.files && dt.files.length) {
-            const $input = $('#poatt-files')[0];
-            // assign files to the hidden input
-            $input.files = dt.files;
-            $('#poatt-msg').text(Array.from(dt.files).map(f => f.name).join(', '));
-        }
+        poattDroppedFiles = (dt && dt.files && dt.files.length) ? dt.files : null;
+        $('#poatt-msg').text(poattDroppedFiles ? Array.from(poattDroppedFiles).map(f => f.name).join(', ') : '');
     });
 
     /* ----------------- Upload ----------------- */
     $(document).on('submit', '#poatt-form', function (e) {
         e.preventDefault();
-
-        const $files = $('#poatt-files');
-        const files = $files[0]?.files || [];
+        const inputFiles = $('#poatt-files')[0]?.files || [];
+        const files = (poattDroppedFiles && poattDroppedFiles.length) ? poattDroppedFiles : inputFiles;
         if (!files.length) return;
 
         const fd = new FormData();
         for (let i = 0; i < files.length; i++) fd.append('files[]', files[i]);
+        poattDroppedFiles = null;
 
         $('#poatt-msg').text('Uploading…');
 
@@ -783,19 +896,23 @@
             const $wrap = $('<div class="poatt-imgwrap"></div>');
             const $img = $(`<img class="poatt-media" alt="">`).attr('src', view);
             $wrap.append($img);
-            $canvas.append($wrap);
+            $('#poatt-canvas').empty().append($wrap);
+
+            // Re-enable toolbar for images (PDF branch disables them)
+            $('.poatt-zoom, .poatt-fit').prop('disabled', false).removeClass('is-disabled');
+            updateZoomLabel(); // optional: ensures label shows 100% after reset
 
             // Fit once the image is loaded
             $img.on('load', () => applyFitForImage($wrap));
 
             // Ctrl/⌘ + wheel zoom
-            $canvas.off('wheel.poatt').on('wheel.poatt', function (e) {
-                if (!(e.ctrlKey || e.metaKey)) return; // only zoom when ctrl/cmd
+            $('#poatt-canvas').off('wheel.poatt').on('wheel.poatt', function (e) {
+                if (!(e.ctrlKey || e.metaKey)) return;
                 e.preventDefault();
                 const delta = e.originalEvent.deltaY;
                 const step = delta > 0 ? -0.1 : 0.1;
                 poattViewer.zoom = Math.max(0.1, Math.min(4, poattViewer.zoom + step));
-                poattViewer.fit = ''; // leave fit mode
+                poattViewer.fit = '';
                 $wrap.css('transform', `scale(${poattViewer.zoom})`);
                 updateZoomLabel();
             });
@@ -1113,5 +1230,59 @@
 
     // extra safety if scripts are in <head> or assets load late
     window.addEventListener('load', initPoTotals);
+
+    // open/close
+    $(document).on('click', '.tax-trigger', function (e) {
+        e.stopPropagation();
+        const $wrap = $(this).closest('.tax-actions');
+        const $menu = $wrap.find('.tax-menu');
+
+        // close others
+        $('.tax-menu').not($menu).removeClass('is-open');
+        $('.tax-actions').not($wrap).removeClass('open');
+
+        // toggle this one
+        $menu.toggleClass('is-open');
+        $wrap.toggleClass('open');
+        $(this).attr('aria-expanded', $menu.hasClass('is-open') ? 'true' : 'false');
+    });
+
+    // choose option
+    $(document).on('click', '.tax-item', function (e) {
+        e.preventDefault();
+        const $wrap = $(this).closest('.tax-actions');
+        const val = $(this).data('val');
+        const label = $(this).text();
+
+        $wrap.find('input[name="tax_kind"]').val(val);
+        $wrap.find('#tax-kind-label').text(label);
+        $wrap.find('.tax-item').removeClass('is-active');
+        $(this).addClass('is-active');
+
+        $wrap.find('.tax-menu').removeClass('is-open');
+        $wrap.removeClass('open');
+
+        // keep totals in sync
+        recalc();
+    });
+
+    // click outside closes (reuse existing doc click if you want)
+    $(document).on('click', function () {
+        $('.tax-menu').removeClass('is-open');
+        $('.tax-actions').removeClass('open');
+    });
+
+    $(function () {
+        const v = ($('input[name="tax_kind"]').val() || '').toLowerCase();
+        $('.tax-menu .tax-item').each(function () {
+            $(this).toggleClass('is-active', $(this).data('val') === v);
+        });
+    });
+
+    $(document).on('input', 'textarea[name="conditions_terms"]', function () {
+        var txt = $(this).val() || '';
+        var $plain = $('.terms-plain');
+        if ($plain.length) $plain.text(txt);
+    });
 
 })(jQuery);
