@@ -17,9 +17,13 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
 
-<body>
+<body data-readonly="{{ auth()->user()?->role === 'consultant' ? 'true' : 'false' }}">
 
     @yield('content')
+
+    <script>
+        window.READ_ONLY = document.body.getAttribute('data-readonly') === 'true';
+    </script>
 
     {{-- load page-specific libs BEFORE your main site script --}}
     @stack('before-scripts')

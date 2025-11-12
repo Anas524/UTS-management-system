@@ -11,19 +11,27 @@ class PurchaseOrderRow extends Model
     protected $casts = [
         'po_sheet_id' => 'int',
         'no'          => 'int',
-        'price_aed'   => 'int',    // fils
-        'qty'         => 'float',
-        'amount'      => 'int',    // fils (line total)
+        'price_aed'   => 'decimal:4',
+        'qty'         => 'decimal:4',
+        'amount'      => 'integer',
         'created_at'  => 'datetime',
         'updated_at'  => 'datetime',
     ];
     protected static function booted()
     {
         static::saving(function ($row) {
-            // price_aed is in fils, qty can be decimal → store amount in fils too
-            $price = is_null($row->price_aed) ? 0 : (int)$row->price_aed;
-            $qty   = is_null($row->qty) ? 0 : (float)$row->qty;
-            $row->amount = (int) round($price * $qty);
+            // Prefer string math if you have helpers, but integer result is what we store
+            $price = $row->price_aed ?? 0;   // DECIMAL(18,4)
+            $qty   = $row->qty ?? 0;
+
+            // If you have Num::mul, use it to avoid float drift; otherwise plain math is fine
+            if (class_exists(\App\Support\Num::class)) {
+                // mul(..., 4) gives 4dp; then we round to 0 for rupiah
+                $line = \App\Support\Num::mul((string)$price, (string)$qty, 4);
+                $row->amount = (int) round((float)$line, 0);
+            } else {
+                $row->amount = (int) round(((float)$price) * ((float)$qty), 0);
+            }
         });
     }
     public function sheet()

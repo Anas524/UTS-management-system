@@ -2,7 +2,11 @@
 @section('title','Create Purchase Order')
 
 @php
-$fmtIDR = fn(int|float $n) => 'IDR '.number_format((int) $n, 0, ',', '.');
+$trim4 = function($n) {
+    $f = number_format((float)$n, 4, '.', ''); // up to 4 dp
+    return rtrim(rtrim($f, '0'), '.');         // trim trailing zeros and dot
+};
+$fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
 @endphp
 
 @section('content')
@@ -44,52 +48,6 @@ $fmtIDR = fn(int|float $n) => 'IDR '.number_format((int) $n, 0, ',', '.');
         <div class="field-row">
           <label>Date</label>
           <input type="date" name="po_date" class="po-input" value="{{ old('po_date') }}">
-        </div>
-
-        <div class="field-row field-row--taxdd">
-          <label>Tax</label>
-
-          <div class="taxdd-inline">
-            <!-- custom dropdown (hidden value + trigger + menu) -->
-            @php
-            $taxKindVal = strtolower(old('tax_kind', $po->tax_kind ?? 'ppn'));
-            $taxKindLabel = $taxKindVal === 'ppn' ? 'PPN — Pajak Pertambahan Nilai'
-            : ($taxKindVal === 'pph' ? 'PPH — Pajak Penghasilan'
-            : ($taxKindVal === 'none' ? 'No Tax' : 'PPN / PPH'));
-            $rateDefault = old('ppn_rate', $po->ppn_rate ?? 0);
-            @endphp
-
-            <div class="tax-actions">
-              <input type="hidden" name="tax_kind" id="tax-kind" value="{{ $taxKindVal }}">
-              <button type="button" class="tax-trigger" aria-haspopup="menu" aria-expanded="false">
-                <span id="tax-kind-label">{{ $taxKindLabel }}</span>
-                <svg class="tax-caret" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
-                  <path d="M5 7l5 6 5-6" fill="none" stroke="currentColor" stroke-width="2" />
-                </svg>
-              </button>
-
-              <div class="tax-menu" role="menu" aria-label="Tax menu">
-                <button class="tax-item" role="menuitem" data-val="ppn">PPN — Pajak Pertambahan Nilai</button>
-                <button class="tax-item" role="menuitem" data-val="pph">PPH — Pajak Penghasilan</button>
-                <button class="tax-item" role="menuitem" data-val="none">No Tax</button>
-              </div>
-            </div>
-
-            <!-- rate + percent -->
-            <div class="input-group">
-              <input
-                id="ppnRate"
-                name="ppn_rate"
-                type="number"
-                step="0.01"
-                class="po-input"
-                value="{{ $rateDefault }}"
-                placeholder="0"
-                aria-label="Tax rate">
-              <input type="text" class="po-input" value="%" readonly tabindex="-1" aria-hidden="true"
-                style="width:52px; text-align:center">
-            </div>
-          </div>
         </div>
 
         <div class="field-row" style="grid-column:1/-1;">
@@ -178,7 +136,7 @@ $fmtIDR = fn(int|float $n) => 'IDR '.number_format((int) $n, 0, ',', '.');
               <input type="text" name="ship_to_phone" class="po-input" value="{{ old('ship_to_phone') }}">
             </label>
           </div>
-          <div class="po-box-title" style="margin-top: 20px;">Payment / Delivery</div>
+          <!-- <div class="po-box-title" style="margin-top: 20px;">Payment / Delivery</div>
           <div class="po-box-grid">
             <label>Payment Terms
               <textarea name="payment_terms" rows="2" class="po-input">{{ old('payment_terms', '100% Advance payment to be made in bank before dispatch of delivery.') }}</textarea>
@@ -191,7 +149,7 @@ $fmtIDR = fn(int|float $n) => 'IDR '.number_format((int) $n, 0, ',', '.');
             <label>Delivery Terms
               <input type="text" name="delivery_terms" class="po-input" value="{{ old('delivery_terms', 'Ex-works Dubai') }}">
             </label>
-          </div>
+          </div> -->
         </div>
       </div>
 
@@ -221,11 +179,41 @@ $fmtIDR = fn(int|float $n) => 'IDR '.number_format((int) $n, 0, ',', '.');
               <th class="right" id="ftSubtotal">IDR 0</th>
               <th></th>
             </tr>
+
+            {{-- TAX: kind (left) + manual amount (right) --}}
             <tr id="taxRow">
-              <th colspan="6" class="right" id="ftTaxLabel">Pajak Pertambahan Nilai (PPN) 0%</th>
-              <th class="right" id="ftTax">IDR 0</th>
+              <th colspan="6" class="right" id="ftTaxLabel">
+                <div class="tax-inline">
+                  <input type="hidden" name="tax_kind" id="tax-kind"
+                    value="{{ strtolower(old('tax_kind','ppn')) }}">
+                  <div class="tax-kind-group" role="group" aria-label="Tax kind">
+                    <button type="button" class="tax-kind-btn {{ strtolower(old('tax_kind','ppn'))==='ppn' ? 'is-active' : '' }}" data-val="ppn">PPN</button>
+                    <button type="button" class="tax-kind-btn {{ strtolower(old('tax_kind','ppn'))==='pph' ? 'is-active' : '' }}" data-val="pph">PPH</button>
+                    <button type="button" class="tax-kind-btn {{ strtolower(old('tax_kind','ppn'))==='none' ? 'is-active' : '' }}" data-val="none">No Tax</button>
+                  </div>
+
+                  <span id="tax-kind-label-text" style="margin-left:10px;">
+                    @php $tk = strtolower(old('tax_kind','ppn')); @endphp
+                    {{ $tk==='pph' ? 'PAJAK PENGHASILAN (PPH)' : ($tk==='none' ? 'NO TAX' : 'PAJAK PERTAMBAHAN NILAI (PPN)') }}
+                  </span>
+                </div>
+              </th>
+
+              <th class="right" id="ftTax">
+                <input
+                  id="taxAmount"
+                  name="ppn_rate"
+                  type="text"
+                  inputmode="numeric"
+                  class="po-input money-input {{ old('tax_kind','ppn')==='none' ? 'is-hidden' : '' }}"
+                  value="{{ $trim4(old('ppn_rate', '')) }}"
+                  placeholder="0"
+                  aria-label="Tax amount (IDR)"
+                  {{ old('tax_kind','ppn')==='none' ? 'disabled' : '' }}>
+              </th>
               <th></th>
             </tr>
+
             <tr>
               <th colspan="6" class="right">Total</th>
               <th class="right" id="ftTotal">IDR 0</th>

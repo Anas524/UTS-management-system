@@ -13,19 +13,27 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Arr;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Carbon;
+use App\Support\Num;
 
 class PurchaseOrderController extends Controller
 {
     public function index(Request $r)
     {
-        $m = (int) $r->query('m', 0);   // 0 = all months, 1..12 specific month
+        $this->authorize('viewAny', PurchaseOrder::class);
+
+        $u = Auth::user();
+        $m = (int) $r->query('m', 0);   // 0 = all months, 1..12 = specific month
 
         $q = PurchaseOrder::query()
             ->with(['rows' => function ($q) {
-                // only what we need
-                $q->select('id', 'po_sheet_id', 'qty', 'price_aed');
-            }])
-            ->where('user_id', Auth::id());
+                // include amount so we can sum exact integers like Expense rows
+                $q->select('id', 'po_sheet_id', 'qty', 'price_aed', 'amount');
+            }]);
+
+        // Normal users: only their POs. Admins & consultants: see all.
+        if (!$u->is_admin && ($u->role ?? null) !== 'consultant') {
+            $q->where('user_id', $u->id);
+        }
 
         if ($m >= 1 && $m <= 12) {
             $q->whereMonth('po_date', $m);
@@ -37,45 +45,47 @@ class PurchaseOrderController extends Controller
             ->paginate(15)
             ->withQueryString();
 
-        // Totals for the filtered set (compute from rows: price_aed * qty)
-        $subtotalIDR = 0;
-        $taxIDR = 0;
+        // ---- Cards totals (IDR integers, mirror show/pdf: ABSOLUTE tax) ----
+        $subtotalInt = 0;
+        $taxInt      = 0;
+        $totalInt    = 0;
 
         foreach ($list as $po) {
-            $poSubtotal = 0;
-            foreach ($po->rows as $r) {
-                $unit = (int) ($r->price_aed ?? 0);   // IDR integer
-                $qty  = (float) ($r->qty ?? 0);
-                $poSubtotal += (int) round($unit * $qty);
-            }
-            $subtotalIDR += $poSubtotal;
+            // Subtotal — recompute every line
+            $poSubtotalInt = (int) ($po->rows ?? collect())->sum(function ($r) {
+                $unit = (float)($r->price_aed ?? 0);
+                $qty  = (float)($r->qty ?? 0);
+                return (int) round($unit * $qty, 0);
+            });
 
-            $rate = (float) ($po->ppn_rate ?? 0);
-            $kind = strtolower($po->tax_kind ?? 'ppn');
-            $tax  = ($kind === 'none') ? 0 : (int) round($poSubtotal * $rate / 100);
+            $subtotalInt += $poSubtotalInt;
 
-            // If PPH should be withholding, subtract here instead of adding
-            $taxIDR += $tax;
+            // Absolute tax in ppn_rate
+            $kind   = strtolower($po->tax_kind ?? 'ppn');
+            $absTax = ($kind === 'none') ? 0 : (int) round((float)($po->ppn_rate ?? 0));
+            $taxInt += $absTax;
+
+            $totalInt += ($kind === 'pph')
+                ? max(0, $poSubtotalInt - $absTax)
+                : $poSubtotalInt + $absTax;
         }
 
-        $totalIDR = $subtotalIDR + $taxIDR;
-
-        // Keep old variable names if your Blade expects them
-        $subtotalFils = $subtotalIDR;
-        $taxFils      = $taxIDR;
-        $totalFils    = $totalIDR;
+        // Pass raw ints; format in Blade
+        $subtotalFils = $subtotalInt;
+        $taxFils      = $taxInt;
+        $totalFils    = $totalInt;
 
         $months = [
             0  => 'All months',
-            1 => 'January',
+            1  => 'January',
             2 => 'February',
             3 => 'March',
-            4  => 'April',
-            5 => 'May',
+            4 => 'April',
+            5  => 'May',
             6 => 'June',
             7 => 'July',
-            8  => 'August',
-            9 => 'September',
+            8 => 'August',
+            9  => 'September',
             10 => 'October',
             11 => 'November',
             12 => 'December',
@@ -98,8 +108,8 @@ class PurchaseOrderController extends Controller
             'po_number'     => 'nullable|string|max:255',
             'po_date'       => 'nullable|date_format:Y-m-d',
             'address'       => 'nullable|string|max:1000',
-            'ppn_rate'      => 'nullable|numeric|min:0|max:100',
             'tax_kind'      => 'required|in:ppn,pph,none',
+            'ppn_rate'      => 'nullable|numeric',
             'status'        => 'nullable|in:open,closed,awaiting_response,transferred',
 
             // Supplier info (left box)
@@ -128,14 +138,16 @@ class PurchaseOrderController extends Controller
             'rows.*.unit'                   => 'nullable|string|max:50',
         ]);
 
-        return DB::transaction(function () use ($data) {
+        $manual = Num::normalize($data['ppn_rate'] ?? null, 4) ?? '0.0000';
+
+        return DB::transaction(function () use ($data, $manual) {
             $po = PurchaseOrder::create([
                 'user_id'      => Auth::id(),
                 'po_number'    => $data['po_number'] ?? null,
                 'po_date'      => $data['po_date'] ?? null,
                 'address'      => $data['address'] ?? null,
-                'ppn_rate'     => $data['ppn_rate'] ?? 0,
                 'tax_kind'     => $data['tax_kind'] ?? 'ppn',
+                'ppn_rate'  => (($data['tax_kind'] ?? 'ppn') === 'none') ? '0.0000' : $manual,
                 'status'       => $data['status'] ?? 'open',
 
                 // Supplier info
@@ -167,7 +179,7 @@ class PurchaseOrderController extends Controller
                 $qtyRaw  = isset($row['qty']) ? trim((string)$row['qty']) : '';
                 $qty     = ($qtyRaw === '') ? null : (float) $qtyRaw;
 
-                $idr = self::parseIDR($row['price_aed'] ?? null);
+                $idr = Num::normalize($row['price_aed'] ?? null, 4); // returns "123.4500" or null
 
                 if ($desc === '' && is_null($idr) && is_null($qty)) continue;
 
@@ -187,15 +199,78 @@ class PurchaseOrderController extends Controller
         });
     }
 
-    /** "1.234.567" / "IDR 1,234,567" -> 1234567 (rupiah int). Returns null if empty. */
-    private static function parseIDR(?string $s): ?int
+    /** Map a non-negative integer (rupiah) to Indonesian words, no "rupiah" suffix. */
+    private static function idrWordsInt(int $n): string
     {
-        if ($s === null) return null;
-        $s = trim($s);
-        if ($s === '') return null;
-        // keep digits only
-        $n = preg_replace('/\D+/', '', $s);
-        return ($n === '') ? null : (int) $n;
+        $s = ['nol', 'satu', 'dua', 'tiga', 'empat', 'lima', 'enam', 'tujuh', 'delapan', 'sembilan', 'sepuluh', 'sebelas'];
+
+        $spell = function (int $x) use (&$spell, $s): string {
+            if ($x < 12) return $s[$x];
+            if ($x < 20) return $spell($x - 10) . ' belas';
+            if ($x < 100) {
+                $t = intdiv($x, 10);
+                $r = $x % 10;
+                return $spell($t) . ' puluh' . ($r ? ' ' . $spell($r) : '');
+            }
+            if ($x < 200) return 'seratus' . ($x > 100 ? ' ' . $spell($x - 100) : '');
+            if ($x < 1000) {
+                $h = intdiv($x, 100);
+                $r = $x % 100;
+                return $spell($h) . ' ratus' . ($r ? ' ' . $spell($r) : '');
+            }
+            if ($x < 2000) return 'seribu' . ($x > 1000 ? ' ' . $spell($x - 1000) : '');
+            if ($x < 1000000) {
+                $k = intdiv($x, 1000);
+                $r = $x % 1000;
+                return $spell($k) . ' ribu' . ($r ? ' ' . $spell($r) : '');
+            }
+            if ($x < 1000000000) {
+                $m = intdiv($x, 1000000);
+                $r = $x % 1000000;
+                return $spell($m) . ' juta' . ($r ? ' ' . $spell($r) : '');
+            }
+            if ($x < 1000000000000) {
+                $b = intdiv($x, 1000000000);
+                $r = $x % 1000000000;
+                return $spell($b) . ' miliar' . ($r ? ' ' . $spell($r) : '');
+            }
+            $t = intdiv($x, 1000000000000);
+            $r = $x % 1000000000000;
+            return $spell($t) . ' triliun' . ($r ? ' ' . $spell($r) : '');
+        };
+
+        return $spell($n);
+    }
+
+    /** From a decimal string like "34120.6650" -> "Tiga puluh ... rupiah koma enam enam lima". */
+    private static function idrWordsFull(string $decimal): string
+    {
+        $decimal = trim((string)$decimal);
+        if ($decimal === '') return 'Nol rupiah';
+
+        $neg = false;
+        if ($decimal[0] === '-') {
+            $neg = true;
+            $decimal = substr($decimal, 1);
+        }
+
+        // Ensure dot as separator and only digits + dot
+        $decimal = preg_replace('/[^0-9.]/', '', $decimal) ?? '0';
+
+        $parts = explode('.', $decimal, 2);
+        $intPart  = (int) ($parts[0] === '' ? 0 : $parts[0]);
+        $fracPart = isset($parts[1]) ? rtrim($parts[1], '0') : '';
+
+        $map = ['0' => 'nol', '1' => 'satu', '2' => 'dua', '3' => 'tiga', '4' => 'empat', '5' => 'lima', '6' => 'enam', '7' => 'tujuh', '8' => 'delapan', '9' => 'sembilan'];
+
+        $base = self::idrWordsInt($intPart) . ' rupiah';
+        if ($fracPart !== '') {
+            $digits = implode(' ', array_map(fn($d) => $map[$d], str_split($fracPart)));
+            $base .= ' koma ' . $digits;
+        }
+
+        $out = ($neg ? 'minus ' : '') . $base;
+        return ucfirst($out);
     }
 
     /** default unit: 'kg'; also ignore literal "unit" */
@@ -230,8 +305,8 @@ class PurchaseOrderController extends Controller
             'po_number'   => 'nullable|string|max:190',
             'po_date'     => 'nullable|date_format:Y-m-d',
             'address'     => 'nullable|string|max:500',
-            'ppn_rate'    => 'nullable|numeric|min:0|max:100',
-            'tax_kind' => 'required|in:ppn,pph,none',
+            'tax_kind'    => 'required|in:ppn,pph,none',
+            'ppn_rate'    => 'nullable|numeric',
             'status'      => 'nullable|in:open,closed,awaiting_response,transferred',
 
             // Supplier info
@@ -256,11 +331,12 @@ class PurchaseOrderController extends Controller
 
         $this->normalizeTax($r, $po);
 
+        $manual = Num::normalize($r->input('ppn_rate'), 4) ?? '0.0000';
+
         $po->fill($r->only([
             'po_number',
             'po_date',
             'address',
-            'ppn_rate',
             'tax_kind',
             'status',
 
@@ -280,6 +356,10 @@ class PurchaseOrderController extends Controller
             'ship_to_recipient',
             'conditions_terms',
         ]));
+
+        // force store absolute IDR tax here
+        $po->ppn_rate = ($po->tax_kind === 'none') ? '0.0000' : $manual;
+
         $po->save();
 
         // If there are no rows in the payload, stop here (don’t touch existing rows)
@@ -297,7 +377,7 @@ class PurchaseOrderController extends Controller
             'rows.*.sku'         => 'nullable|string|max:190',
             'rows.*.brand'       => 'nullable|string|max:190',
             'rows.*.description' => 'nullable|string|max:500',
-            'rows.*.price_aed'   => 'nullable|string',  // we’ll normalize below
+            'rows.*.price_aed'   => 'nullable|numeric',  // we’ll normalize below
             'rows.*.qty'         => 'nullable|numeric',
             'rows.*.unit'        => 'nullable|string|max:50',
         ]);
@@ -316,10 +396,7 @@ class PurchaseOrderController extends Controller
                     continue;
                 }
 
-                $aed = null;
-                if (isset($row['price_aed']) && $row['price_aed'] !== '') {
-                    $aed = self::parseIDR($row['price_aed']); // IDR integer
-                }
+                $aed = \App\Support\Num::normalize($row['price_aed'] ?? null, 4); // "522.2200" or null
 
                 $qtyRaw = isset($row['qty']) ? trim((string)$row['qty']) : '';
                 $qty    = ($qtyRaw === '') ? null : (float) $qtyRaw;
@@ -358,29 +435,45 @@ class PurchaseOrderController extends Controller
     {
         $this->authorize('update', $po);
 
+        $nextNo = ((int) $po->rows()->max('no')) + 1;
+
+        // normalize or force zero (DECIMAL(18,4))
+        $price = $r->filled('price_aed')
+            ? \App\Support\Num::normalize($r->input('price_aed'), 4)
+            : '0.0000';
+
+        // qty as float, default 1
+        $qtyRaw = trim((string) $r->input('qty', '1'));
+        $qty    = ($qtyRaw === '') ? 1.0 : (float) $qtyRaw;
+
+        // unit: default to 'kg'; ignore literal "unit"
+        $unit = $r->input('unit', 'kg');
+        $u    = strtolower(trim((string)$unit));
+        if ($u === '' || $u === 'unit') $unit = 'kg';
+
         $row = $po->rows()->create([
-            'sku'         => $r->input('sku', ''),
-            'description' => $r->input('description', 'New item'),
-            'price_aed'   => $r->filled('price_aed') ? self::parseIDR($r->price_aed) : null,
-            'qty'         => (float) $r->input('qty', 1),
-            'unit'        => $r->input('unit', 'kg'),
+            'no'          => $nextNo,
+            'sku'         => (string) $r->input('sku', ''),
+            'brand'       => (string) $r->input('brand', ''),
+            'description' => (string) $r->input('description', 'New item'),
+            'price_aed'   => $price,           // ← never null
+            'qty'         => $qty,
+            'unit'        => $unit,
         ]);
 
-        if ($r->expectsJson() || $r->ajax()) {
-            return response()->json([
-                'ok'  => true,
-                'row' => [
-                    'id'          => $row->id,
-                    'sku'         => $row->sku,
-                    'description' => $row->description,
-                    'price_aed'   => $row->price_aed, // fils
-                    'qty'         => $row->qty,
-                    'unit'        => $row->unit,
-                ],
-            ]);
-        }
-
-        return redirect()->route('po.show', $po);
+        return response()->json([
+            'ok'  => true,
+            'row' => [
+                'id'          => $row->id,
+                'no'          => $row->no,          // send back for UI numbering
+                'sku'         => (string) $row->sku,
+                'brand'       => (string) $row->brand,
+                'description' => (string) $row->description,
+                'price_aed'   => (string) $row->price_aed,
+                'qty'         => (float)  ($row->qty ?? 0),
+                'unit'        => (string) ($row->unit ?? ''),
+            ],
+        ], 201);
     }
 
     public function updateRow(Request $r, PurchaseOrder $po, PurchaseOrderRow $row)
@@ -398,9 +491,7 @@ class PurchaseOrderController extends Controller
         ]);
 
         if ($r->has('price_aed')) {
-            $data['price_aed'] = $r->filled('price_aed')
-                ? self::parseIDR($r->input('price_aed'))
-                : null;
+            $data['price_aed'] = $r->filled('price_aed') ? Num::normalize($r->input('price_aed'), 4) : null;
         }
 
         if ($r->filled('unit')) {
@@ -479,7 +570,7 @@ class PurchaseOrderController extends Controller
             $row['qty'] = (float) ($row['qty'] ?? 0);
 
             $aed = trim((string)($row['price_aed'] ?? ''));
-            $row['price_aed_idr'] = ($aed === '') ? null : self::parseIDR($aed);
+            $row['price_aed_norm'] = ($aed === '') ? null : \App\Support\Num::normalize($aed, 4);
         }
         unset($row); // break the ref
 
@@ -493,7 +584,7 @@ class PurchaseOrderController extends Controller
                     'no'           => $row['no'],
                     'sku'          => $row['sku'] ?? null,
                     'description'  => $row['description'] ?? null,
-                    'price_aed'    => $row['price_aed_idr'],
+                    'price_aed'    => $row['price_aed_norm'],
                     'qty'          => $row['qty'] ?? 0,
                     'unit'         => $row['unit'] ?? null,
                 ];
@@ -518,105 +609,67 @@ class PurchaseOrderController extends Controller
 
     public function exportPdf(PurchaseOrder $po)
     {
+        $this->authorize('download', $po);
         $this->authorize('view', $po);
         $po->load('rows');
 
-        // Totals
         $rows = $po->rows ?? collect();
-        $subtotalIDR = $rows->sum(function ($r) {
-            $price = (int) ($r->price_aed ?? 0); // IDR int
-            $qty   = (float) ($r->qty ?? 0);
-            return (int) round($price * $qty);
-        });
-        $rate = is_null($po->ppn_rate) ? 0 : (float)$po->ppn_rate;
-        $kind = strtolower($po->tax_kind ?? 'ppn');
 
-        $taxIDR   = ($kind === 'none') ? 0 : (int) round($subtotalIDR * $rate / 100);
-        $totalIDR = $subtotalIDR + $taxIDR; // flip if PPH is withholding
+        // 1) Subtotal: sum the stored integer rupiah (already rounded per line)
+        $subtotalInt = (int) $rows->sum(fn($r) => (int) ($r->amount ?? 0));
 
-        $fmtIDR = fn(int $n) => 'IDR ' . number_format($n, 0, ',', '.');
+        // 2) Tax: treat ppn_rate as percent (%). If 'none' or <=0 → 0.
+        $kind = strtolower($po->tax_kind ?? 'ppn');   // 'ppn' | 'pph' | 'none'
+        $rate = (float) ($po->ppn_rate ?? 0);         // percent in UI (e.g. 9)
+        $taxInt = ($kind === 'none' || $rate <= 0)
+            ? 0
+            : (int) round($subtotalInt * $rate / 100);
 
-        // amount in words (Indonesian - rupiah)
-        $amountWords = (function (int $n): string {
-            if (!class_exists(\NumberFormatter::class)) {
-                return 'IDR ' . number_format($n, 0, ',', '.');
-            }
-            $fmt = new \NumberFormatter('id', \NumberFormatter::SPELLOUT);
-            $w = $fmt->format($n);
-            return $w ? ucfirst($w) . ' rupiah' : ('IDR ' . number_format($n, 0, ',', '.'));
-        })($totalIDR);
+        // 3) Total: add tax (or subtract if you treat PPH as withholding)
+        $totalInt = ($kind === 'pph')
+            ? max(0, $subtotalInt - $taxInt)
+            : $subtotalInt + $taxInt;
 
-        // --- Fixed "ORDER BY" info (no DB field needed) ---
-        $orderBy = [
-            'company' => 'PT. UNIVERSAL TRADE SERVICES',
-            'npwp'    => '1000.0000.0070.1243',
-            'lines'   => [
-                'Cikini Building, JL. Cikini Raya No. 9, RT 016/ RW 001, Cikini, Menteng',
-                'Kota Adm. Jakarta Pusat, DKI Jakarta',
-            ],
-        ];
+        // 4) Formatters
+        $fmtIDR0 = fn(int $n) => 'IDR ' . number_format($n, 0, ',', '.');
+        $rateLbl = rtrim(rtrim(number_format($rate, 2, '.', ''), '0'), '.'); // "9" or "1.5"
+        $taxLabel = ($kind === 'none' || $rate <= 0) ? '' : strtoupper($kind) . " ({$rateLbl}%)";
 
-        // "SHIP TO" — use your PO’s free-text address (or customize if you add columns later)
-        $shipTo = [
-            'title'   => 'Ship To',
-            'lines' => array_filter([(string) $po->address]),
-        ];
+        // 5) Amount in words
+        $amountWords = self::idrWordsFull((string) $totalInt);
 
-        // Preload background image as base64 (avoid filesystem reads inside Blade)
+        // 6) Background (optional)
         $bgData = null;
         $bgPath = public_path('pdf/pdf-export.png');
-        if (is_file($bgPath)) {
-            // TIP: keep this image ~150–200 DPI A4 to avoid memory spikes
-            $bgData = base64_encode(file_get_contents($bgPath));
-        }
+        if (is_file($bgPath)) $bgData = base64_encode(file_get_contents($bgPath));
 
-        // Dompdf options: allow local assets & HTML5 parser (less edge-case CSS errors)
         $options = [
-            'isRemoteEnabled'       => true,
-            'isHtml5ParserEnabled'  => true,
-            'chroot'                => public_path(), // lock Dompdf to /public
-            'dpi'                   => 96,            // keep moderate DPI
-            'defaultFont'           => 'DejaVu Sans',
+            'isRemoteEnabled'      => true,
+            'isHtml5ParserEnabled' => true,
+            'chroot'               => public_path(),
+            'dpi'                  => 96,
+            'defaultFont'          => 'DejaVu Sans',
         ];
 
-        // Tax label based on kind
-        $rateTxt = rtrim(rtrim(number_format($rate, 2, '.', ''), '0'), '.');
-        $taxLabel = match ($kind) {
-            'ppn'  => "Pajak Pertambahan Nilai (PPN) {$rateTxt}%",
-            'pph'  => "Pajak Penghasilan (PPH) {$rateTxt}%",
-            default => '',
-        };
+        $payload = [
+            'po'          => $po,
+            'rows'        => $rows,
+            'subtotal'    => $fmtIDR0($subtotalInt),
+            'ppn'         => $fmtIDR0($taxInt),
+            'total'       => $fmtIDR0($totalInt),
+            'amountWords' => $amountWords,
+            'bgData'      => $bgData,
+            'taxLabel'    => $taxLabel,
+        ];
 
-        $pdf = Pdf::setOptions($options)
-            ->loadView('po.pdf', [
-                'po'          => $po,
-                'rows'        => $rows,
-                'subtotal'    => $fmtIDR($subtotalIDR),
-                'ppn'         => $fmtIDR($taxIDR),
-                'total'       => $fmtIDR($totalIDR),
-                'amountWords' => $amountWords,
-                'bgData'      => $bgData,
-                'taxLabel'    => $taxLabel,
-                'orderBy'     => $orderBy,
-                'shipTo'      => $shipTo,
-            ])
+        if (request('debug') === '1') return view('po.pdf', $payload);
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::setOptions($options)
+            ->loadView('po.pdf', $payload)
             ->setPaper('a4', 'portrait');
 
-        if (request('debug') === '1') {
-            return view('po.pdf', [
-                'po'          => $po,
-                'rows'        => $rows,
-                'subtotal'    => $fmtIDR($subtotalIDR),
-                'ppn'         => $fmtIDR($taxIDR),
-                'total'       => $fmtIDR($totalIDR),
-                'amountWords' => $amountWords,
-                'bgData'      => $bgData,
-                'taxLabel'    => $taxLabel,
-            ]);
-        }
-
         $num = $po->po_number ?: ('PO-' . $po->id);
-        $filename = Str::of($num)->replace(['/', '\\', ' '], '_') . '_' . now()->format('Ymd_His') . '.pdf';
+        $filename = \Illuminate\Support\Str::of($num)->replace(['/', '\\', ' '], '_') . '_' . now()->format('Ymd_His') . '.pdf';
 
         return $pdf->download($filename);
     }
@@ -685,7 +738,7 @@ class PurchaseOrderController extends Controller
                 'id'                 => $po->id,
                 'po_number'          => (string) $po->po_number,
                 'po_date'            => optional($po->po_date)->format('Y-m-d'),
-                'ppn_rate'           => (float) ($po->ppn_rate ?? 0),
+                'ppn_rate'           => (string) ($po->ppn_rate ?? '0'),
                 'tax_kind'           => (string) ($po->tax_kind ?? 'ppn'),
                 'status'             => (string) ($po->status ?? 'open'),
                 'address'            => (string) ($po->address ?? ''),
@@ -710,34 +763,25 @@ class PurchaseOrderController extends Controller
                 'brand'       => (string) ($r->brand ?? ''),
                 'description' => (string) ($r->description ?? ''),
                 'qty'         => (float)  ($r->qty ?? 0),
-                'price_aed'   => (int)    ($r->price_aed ?? 0), // cents
+                'price_aed' => (string) ($r->price_aed ?? '0'),
             ])->values(),
         ]);
     }
 
     private function normalizeTax(Request $r, ?PurchaseOrder $po = null): void
     {
-        // kind: only ppn | pph | none
         $kind = strtolower((string)$r->input('tax_kind', 'ppn'));
         if (!in_array($kind, ['ppn', 'pph', 'none'], true)) {
             $kind = 'ppn';
         }
+        $r->merge(['tax_kind' => $kind]);
 
-        // rate: 0 if none; else numeric, clamped 0..100
-        $rate = ($kind === 'none') ? 0.0 : (float)$r->input('ppn_rate', 0);
-        if ($rate < 0)   $rate = 0.0;
-        if ($rate > 100) $rate = 100.0;
+        if ($po) $po->tax_kind = $kind;
+    }
 
-        // reflect back into request (so validation/old() stay in sync)
-        $r->merge([
-            'tax_kind' => $kind,
-            'ppn_rate' => $rate,
-        ]);
-
-        // optionally enforce on an existing model too
-        if ($po) {
-            $po->tax_kind = $kind;
-            $po->ppn_rate = $rate;
-        }
+    public function __construct()
+    {
+        // route param must match your routes: /po/{po}
+        $this->authorizeResource(\App\Models\PurchaseOrder::class, 'po');
     }
 }

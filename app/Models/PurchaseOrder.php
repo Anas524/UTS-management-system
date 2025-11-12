@@ -30,7 +30,7 @@ class PurchaseOrder extends Model
         'ship_to_recipient',
         'conditions_terms',
     ];
-    protected $casts = ['po_date' => 'date', 'ppn_rate' => 'float'];
+    protected $casts = ['po_date' => 'date', 'ppn_rate' => 'decimal:4'];
     public function rows()
     {
         return $this->hasMany(PurchaseOrderRow::class, 'po_sheet_id', 'id');

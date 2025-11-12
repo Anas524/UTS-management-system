@@ -1,43 +1,50 @@
 @extends('layouts.app')
 @section('title', 'Purchase Order #'.$po->po_number)
 
-@php
-// Always IDR integers with Indonesian grouping
-$fmtIDR = fn(int $n) => 'IDR '.number_format($n, 0, ',', '.');
+@php $isConsultant = auth()->user()?->role === 'consultant'; @endphp
 
-// Safe int parser (handles "3.000" or 3000)
-$toInt = fn($v) => (int) preg_replace('/[^\d]/', '', (string) $v);
+@php
+$canUpdate = auth()->user()?->can('update', $po);
+
+$fmtIDR = fn(int $n) => 'IDR '.number_format($n, 0, ',', '.');
+$toNum = fn($v) => (float) preg_replace('/[^\d.]/', '', (string) $v);
 
 $rows = $po->rows ?? collect();
 
-// Subtotal in IDR = sum(unit * qty)
-$subtotalIDR = $rows->sum(function ($r) use ($toInt) {
-$unit = $toInt($r->price_aed ?? 0); // stored as IDR integer; robust if string with dots
-$qty = (float) ($r->qty ?? 0);
-return (int) round($unit * $qty);
+// Subtotal (saved rows)
+$subtotalIDR = $rows->sum(function ($r) use ($toNum) {
+    $unit = $toNum($r->price_aed ?? 0);
+    $qty  = $toNum($r->qty ?? 0);
+    return (int) round($unit * $qty);
 });
 
-$kind = strtolower($po->tax_kind ?? 'ppn');
-$rate = (float) ($po->ppn_rate ?? 0);
-$taxIDR = $kind === 'none' ? 0 : (int) round($subtotalIDR * $rate / 100);
-$totalIDR = $subtotalIDR + $taxIDR;
+// ---- IMPORTANT: use SAVED values for calculations ----
+$kindSaved = strtolower($po->tax_kind ?? 'ppn');
+$manualSaved = (int) round((float) ($po->ppn_rate ?? 0));
 
-$rateTxt = rtrim(rtrim(number_format($rate, 2, '.', ''), '0'), '.');
+$taxIDR = ($kindSaved === 'none') ? 0 : ($manualSaved > 0 ? $manualSaved : 0);
+$totalIDR = (int) $subtotalIDR + (int) $taxIDR;
 
-// Labels
-$names = [
-'ppn' => ['short' => 'PPN', 'full' => 'Pajak Pertambahan Nilai'],
-'pph' => ['short' => 'PPH', 'full' => 'Pajak Penghasilan'],
-'none' => null,
-];
-if (!isset($names[$kind])) $kind = 'ppn';
-$entry = $names[$kind];
-$taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%') : '';
+// For UI controls, you can still show the last typed value:
+$kindUi = strtolower(old('tax_kind', $po->tax_kind ?? 'ppn'));
+$rateUi = old('ppn_rate', $po->ppn_rate ?? 0);
+
+$taxKindText = $kindSaved==='pph'
+? 'PAJAK PENGHASILAN (PPH)'
+: ($kindSaved==='none' ? 'NO TAX' : 'PAJAK PERTAMBAHAN NILAI (PPN)');
+
+$trim4 = function($n) {
+$f = number_format((float)$n, 4, '.', ''); // up to 4 dp
+return rtrim(rtrim($f, '0'), '.'); // trim trailing zeros and dot
+};
+
+/** "34,111.765" / trims trailing .00xx nicely */
+$fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
 @endphp
 
 @section('content')
 
-<div class="sheet-wrap">
+<div class="sheet-wrap" data-readonly="{{ $isConsultant ? 'true' : 'false' }}">
     <div class="sheet-card">
         <div class="sheet-head">
             <div>
@@ -61,7 +68,8 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                         data-upload-url="{{ route('po.attachments.store', $po) }}"
                         data-endpoint="{{ route('po.attachments.index', $po) }}"
                         data-bundle-url="{{ route('po.attachments.bundle', $po) }}"
-                        data-csrf="{{ csrf_token() }}">
+                        data-csrf="{{ csrf_token() }}"
+                        data-initial-count="{{ $po->attachments_count ?? 0 }}">
                         Attachments
                         <span class="att-badge" id="poatt-count">{{ $po->attachments_count ?? 0 }}</span>
                         <svg class="att-caret" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
@@ -70,14 +78,29 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                     </button>
 
                     <div class="att-menu" role="menu" aria-label="Attachments menu">
+                        @can('update', $po)
                         <button class="att-item js-att-manage" role="menuitem">Manage uploads</button>
+                        @endcan
                         <button class="att-item js-att-view" role="menuitem">View attachments</button>
                     </div>
                 </div>
 
+                @can('update', $po)
                 <button type="submit" form="poHdrForm" class="sheet-btn sheet-btn-primary">Save PO</button>
+                @endcan
             </div>
+
+            @if($isConsultant)
+            <div class="sheet-head-note">Read-only mode: you can view and download.</div>
+            @endif
         </div>
+
+        @php
+        $ro = $isConsultant; // boolean
+        $roAttr = $ro ? 'disabled readonly' : ''; // attributes only
+        $roClass = $ro ? ' locked-input' : ''; // leading space
+        $canEdit = auth()->user()?->can('update', $po) && !$ro;
+        @endphp
 
         {{-- Header form (same view for read and edit) --}}
         <form method="POST" action="{{ route('po.update',$po) }}" id="poHdrForm" data-update-url="{{ route('po.update',$po) }}" data-csrf="{{ csrf_token() }}">
@@ -85,60 +108,15 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
             <div class="admin-grid">
                 <div class="field-row">
                     <label>PO Number</label>
-                    <input name="po_number" class="po-input" value="{{ old('po_number',$po->po_number) }}">
+                    <input name="po_number" class="po-input{{ $roClass }}" value="{{ old('po_number',$po->po_number) }}" {{ $roAttr }}>
                 </div>
                 <div class="field-row">
                     <label>Date</label>
-                    <input type="date" name="po_date" class="po-input" value="{{ old('po_date', $po->po_date_for_input) }}">
-                </div>
-                <div class="field-row field-row--taxdd">
-                    <label>Tax</label>
-
-                    <div class="taxdd-inline">
-                        <!-- custom dropdown (hidden value + trigger + menu) -->
-                        @php
-                        $taxKindVal = strtolower(old('tax_kind', $po->tax_kind ?? 'ppn'));
-                        $taxKindLabel = $taxKindVal === 'ppn' ? 'PPN — Pajak Pertambahan Nilai'
-                        : ($taxKindVal === 'pph' ? 'PPH — Pajak Penghasilan'
-                        : ($taxKindVal === 'none' ? 'No Tax' : 'PPN / PPH'));
-                        $rateDefault = old('ppn_rate', $po->ppn_rate ?? 0);
-                        @endphp
-
-                        <div class="tax-actions">
-                            <input type="hidden" name="tax_kind" id="tax-kind" value="{{ $taxKindVal }}">
-                            <button type="button" class="tax-trigger" aria-haspopup="menu" aria-expanded="false">
-                                <span id="tax-kind-label">{{ $taxKindLabel }}</span>
-                                <svg class="tax-caret" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
-                                    <path d="M5 7l5 6 5-6" fill="none" stroke="currentColor" stroke-width="2" />
-                                </svg>
-                            </button>
-
-                            <div class="tax-menu" role="menu" aria-label="Tax menu">
-                                <button class="tax-item" role="menuitem" data-val="ppn">PPN — Pajak Pertambahan Nilai</button>
-                                <button class="tax-item" role="menuitem" data-val="pph">PPH — Pajak Penghasilan</button>
-                                <button class="tax-item" role="menuitem" data-val="none">No Tax</button>
-                            </div>
-                        </div>
-
-                        <!-- rate + percent -->
-                        <div class="input-group">
-                            <input
-                                id="ppnRate"
-                                name="ppn_rate"
-                                type="number"
-                                step="0.01"
-                                class="po-input"
-                                value="{{ $rateDefault }}"
-                                placeholder="0"
-                                aria-label="Tax rate">
-                            <input type="text" class="po-input" value="%" readonly tabindex="-1" aria-hidden="true"
-                                style="width:52px; text-align:center">
-                        </div>
-                    </div>
+                    <input type="date" name="po_date" class="po-input{{ $roClass }}" value="{{ old('po_date', $po->po_date_for_input) }}" {{ $roAttr }}>
                 </div>
                 <div class="field-row" style="grid-column:1/-1;">
                     <label>Address</label>
-                    <input name="address" class="po-input" value="{{ old('address',$po->address) }}">
+                    <input name="address" class="po-input{{ $roClass }}" value="{{ old('address',$po->address) }}" {{ $roAttr }}>
                 </div>
             </div>
 
@@ -149,6 +127,7 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
             <div class="field-row field-row--status">
                 <label>Status</label>
 
+                @if($canEdit)
                 <div class="status-actions">
                     <input type="hidden" name="status" id="po-status" value="{{ $statusVal }}">
 
@@ -166,6 +145,9 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                         <button class="status-item" role="menuitem" data-val="transferred">Transferred</button>
                     </div>
                 </div>
+                @else
+                <div class="readflat">{{ ucfirst(str_replace('_',' ',$po->status ?? 'open')) }}</div>
+                @endif
             </div>
 
             {{-- Supplier & Terms --}}
@@ -175,19 +157,19 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                     <div class="po-box-title">Supplier Information</div>
                     <div class="po-box-grid">
                         <label>Company Name
-                            <input type="text" name="sup_company" class="po-input" value="{{ old('sup_company',$po->sup_company) }}" form="poHdrForm">
+                            <input type="text" name="sup_company" class="po-input{{ $roClass }}" value="{{ old('sup_company',$po->sup_company) }}" form="poHdrForm" {{ $roAttr }}>
                         </label>
                         <label>Company Address
-                            <textarea name="sup_address" rows="2" class="po-input" form="poHdrForm">{{ old('sup_address',$po->sup_address) }}</textarea>
+                            <textarea name="sup_address" rows="2" class="po-input{{ $roClass }}" form="poHdrForm" {{ $roAttr }}>{{ old('sup_address',$po->sup_address) }}</textarea>
                         </label>
                         <label>Phone Number
-                            <input type="text" name="sup_phone" class="po-input" value="{{ old('sup_phone',$po->sup_phone) }}" form="poHdrForm">
+                            <input type="text" name="sup_phone" class="po-input{{ $roClass }}" value="{{ old('sup_phone',$po->sup_phone) }}" form="poHdrForm" {{ $roAttr }}>
                         </label>
                         <label>E-mail
-                            <input type="email" name="sup_email" class="po-input" value="{{ old('sup_email',$po->sup_email) }}" form="poHdrForm">
+                            <input type="email" name="sup_email" class="po-input{{ $roClass }}" value="{{ old('sup_email',$po->sup_email) }}" form="poHdrForm" {{ $roAttr }}>
                         </label>
                         <label>NPWP
-                            <input type="text" name="sup_npwp" class="po-input" value="{{ old('sup_npwp',$po->sup_npwp) }}" form="poHdrForm">
+                            <input type="text" name="sup_npwp" class="po-input{{ $roClass }}" value="{{ old('sup_npwp',$po->sup_npwp) }}" form="poHdrForm" {{ $roAttr }}>
                         </label>
                     </div>
                 </div>
@@ -196,18 +178,18 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                     <div class="po-box-title">Ship To (PT. UNIVERSAL TRADE SERVICES)</div>
                     <div class="po-box-grid">
                         <label>Recipient
-                            <input type="text" name="ship_to_recipient" class="po-input" form="poHdrForm" value="{{ old('ship_to_recipient', $po->ship_to_recipient) }}">
+                            <input type="text" name="ship_to_recipient" class="po-input{{ $roClass }}" form="poHdrForm" value="{{ old('ship_to_recipient', $po->ship_to_recipient) }}" {{ $roAttr }}>
                         </label>
 
                         <label>Address
-                            <textarea name="ship_to_address" rows="2" class="po-input" form="poHdrForm">{{ old('ship_to_address', $po->ship_to_address) }}</textarea>
+                            <textarea name="ship_to_address" rows="2" class="po-input{{ $roClass }}" form="poHdrForm" {{ $roAttr }}>{{ old('ship_to_address', $po->ship_to_address) }}</textarea>
                         </label>
 
                         <label>Phone
-                            <input type="text" name="ship_to_phone" class="po-input" value="{{ old('ship_to_phone', $po->ship_to_phone) }}" form="poHdrForm">
+                            <input type="text" name="ship_to_phone" class="po-input{{ $roClass }}" value="{{ old('ship_to_phone', $po->ship_to_phone) }}" form="poHdrForm" {{ $roAttr }}>
                         </label>
                     </div>
-                    <div class="po-box-title" style="margin-top: 20px;">Payment / Delivery</div>
+                    <!-- <div class="po-box-title" style="margin-top: 20px;">Payment / Delivery</div>
                     <div class="po-box-grid">
                         <label>Payment Terms
                             <textarea name="payment_terms" rows="2" class="po-input" form="poHdrForm">{{ old('payment_terms', $po->payment_terms ?? '100% Advance payment to be made in bank before dispatch of delivery.') }}</textarea>
@@ -220,7 +202,7 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                         <label>Delivery Terms
                             <input type="text" name="delivery_terms" class="po-input" value="{{ old('delivery_terms', $po->delivery_terms ?? 'Ex-works Dubai') }}" form="poHdrForm">
                         </label>
-                    </div>
+                    </div> -->
                 </div>
             </div>
 
@@ -231,7 +213,7 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                         Paste any plain text. We’ll show it exactly as you type (numbers, hyphens, or bullets).
                         Press Enter for a new line; leave a blank line for a paragraph gap.
                     </small>
-                    <textarea name="conditions_terms" rows="5" class="po-input" form="poHdrForm" style="margin-top: 10px;">{{ old('conditions_terms', $po->conditions_terms) }}</textarea>
+                    <textarea name="conditions_terms" rows="5" class="po-input{{ $roClass }}" {{ $roAttr }} form="poHdrForm" style="margin-top: 10px;">{{ old('conditions_terms', $po->conditions_terms) }}</textarea>
                 </label>
             </div>
         </form>
@@ -256,38 +238,64 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                         <td class="center">{{ $i + 1 }}</td>
 
                         <td>
+                            @can('update', $po)
                             <input name="sku" class="po-input" form="row-{{ $r->id }}" value="{{ $r->sku }}">
+                            @else
+                            <div class="readflat">{{ $r->sku }}</div>
+                            @endcan
                         </td>
 
                         <td>
+                            @can('update', $po)
                             <input name="brand" class="po-input" form="row-{{ $r->id }}" value="{{ $r->brand }}">
+                            @else
+                            <div class="readflat">{{ $r->brand }}</div>
+                            @endcan
                         </td>
 
                         <td class="col-desc">
+                            @can('update', $po)
                             <textarea name="description" rows="1" class="po-input" form="row-{{ $r->id }}">{{ $r->description }}</textarea>
+                            @else
+                            <div class="readflat">{{ $r->description }}</div>
+                            @endcan
                         </td>
 
                         <td class="right">
-                            <input name="qty" class="po-input" form="row-{{ $r->id }}" value="{{ $r->qty ?: 0 }}">
+                            @can('update', $po)
+                            <input name="qty" class="po-input" form="row-{{ $r->id }}" value="{{ $trim4($r->qty) }}">
+                            @else
+                            <div class="readflat">{{ $trim4($r->qty) }}</div>
+                            @endcan
                         </td>
 
                         <td class="right">
+                            @can('update', $po)
                             <input
                                 name="price_aed"
-                                class="po-input js-aed"
+                                class="po-input{{ $canEdit ? ' js-aed' : '' }}{{ $roClass }}"
                                 inputmode="numeric"
                                 form="row-{{ $r->id }}"
-                                value="{{ $r->price_aed !== null ? number_format($r->price_aed, 0, ',', '.') : '' }}">
+                                value="{{ $trim4($r->price_aed) }}">
+                            @else
+                            <div class="readflat">{{ $trim4($r->price_aed) }}</div>
+                            @endcan
                         </td>
 
                         @php
-                        $amt = (int) $toInt($r->price_aed ?? 0) * (float)($r->qty ?: 0);
+                            $unit = $toNum($r->price_aed ?? 0);
+                            $qty  = $toNum($r->qty ?? 0);
+                            $amt  = (int) round($unit * $qty);
+                            if (!$amt && isset($r->amount)) {
+                                $amt = (int) round($toNum($r->amount)); // in case policy/accessor masks price but not amount
+                            }
                         @endphp
-                        <td class="right amount-aed">{{ $fmtIDR((int) round($amt)) }}</td>
+                        <td class="right amount-aed">{{ $fmtIDR($amt) }}</td>
 
                         <td class="right">
                             <div class="icon-actions">
                                 {{-- PATCH (Save) --}}
+                                @can('update', $po)
                                 <form id="row-{{ $r->id }}" method="POST"
                                     action="{{ route('po.rows.update', [$po, $r]) }}"
                                     class="row-form">
@@ -300,6 +308,7 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                                         <span class="sr-only">Save</span>
                                     </button>
                                 </form>
+                                @endcan
 
                                 {{-- DELETE (Row) --}}
                                 @can('delete', $po)
@@ -337,9 +346,40 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                         <th></th>
                     </tr>
 
-                    <tr id="taxRow" class="{{ $kind==='none' ? 'is-hidden' : '' }}">
-                        <th colspan="6" class="right" id="ftTaxLabel">{{ $taxLabelFull }}</th>
-                        <th class="right" id="ftTax">{{ $fmtIDR($taxIDR) }}</th>
+                    <tr id="taxRow">
+                        <th colspan="6" class="right" id="ftTaxLabel">
+                            @can('update', $po)
+                            <div class="tax-inline">
+                                <input type="hidden" name="tax_kind" id="tax-kind" value="{{ $kindUi }}">
+                                <div class="tax-kind-group" role="group" aria-label="Tax kind">
+                                    <button type="button" class="tax-kind-btn {{ $kindUi==='ppn' ? 'is-active' : '' }}" data-val="ppn">PPN</button>
+                                    <button type="button" class="tax-kind-btn {{ $kindUi==='pph' ? 'is-active' : '' }}" data-val="pph">PPH</button>
+                                    <button type="button" class="tax-kind-btn {{ $kindUi==='none' ? 'is-active' : '' }}" data-val="none">No Tax</button>
+                                </div>
+
+                                <span id="tax-kind-label-text" style="margin-left:10px;">{{ $taxKindText }}</span>
+                            </div>
+                            @else
+                            <span>{{ $taxKindText }}</span>
+                            @endcan
+                        </th>
+
+                        <th class="right" id="ftTax">
+                            @can('update', $po)
+                            <input
+                                id="taxAmount"
+                                name="ppn_rate"
+                                type="text"
+                                inputmode="numeric"
+                                class="po-input money-input {{ $kindUi==='none' ? 'is-hidden' : '' }}"
+                                value="{{ $trim4($rateUi) }}"
+                                placeholder="0"
+                                aria-label="Tax amount (IDR)"
+                                {{ $kindUi==='none' ? 'disabled' : '' }}>
+                            @else
+                            <div class="readflat">{{ $fmtIDR($taxIDR) }}</div>
+                            @endcan
+                        </th>
                         <th></th>
                     </tr>
 
@@ -352,6 +392,7 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
             </table>
         </div>
         <div class="sheet-toolbar">
+            @can('update', $po)
             <button
                 id="jsAddRow"
                 type="button"
@@ -360,6 +401,7 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                 data-update-url-template="{{ route('po.rows.update', [$po, '__ROW__']) }}"
                 data-delete-url-template="{{ route('po.rows.delete', [$po, '__ROW__']) }}"
                 data-csrf="{{ csrf_token() }}">+ Add row</button>
+            @endcan
         </div>
         @php
         $totalInt = (int) $totalIDR;
@@ -395,6 +437,7 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
         @endif
 
         <div class="sheet-toolbar" style="justify-content: flex-end;">
+            @can('delete', $po)
             <form id="deletePoForm" action="{{ route('po.destroy', $po) }}" method="POST">
                 @csrf @method('DELETE')
                 <button type="button" id="btnDeletePo"
@@ -403,19 +446,29 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                     Delete PO
                 </button>
             </form>
+            @endcan
         </div>
     </div>
 
     {{-- Upload / manage modal --}}
-    <div id="poatt-upload" class="poatt-modal poatt-hidden" aria-hidden="true">
-        <div class="poatt-panel" role="dialog" aria-modal="true" aria-labelledby="poatt-upload-title">
+    <div id="poatt-upload" class="poatt-modal poatt-hidden" aria-hidden="true" data-can-update="{{ $canUpdate ? '1' : '0' }}">
+        <div class=" poatt-panel" role="dialog" aria-modal="true" aria-labelledby="poatt-upload-title">
             <div class="poatt-head">
                 <h3 id="poatt-upload-title">Attachments</h3>
                 <button type="button" class="poatt-close" aria-label="Close">×</button>
             </div>
 
             <div class="poatt-body">
-                <!-- DARK HERO (same vibe as .poatt-view) -->
+
+                {{-- READ-ONLY NOTICE for consultants --}}
+                @unless($canUpdate)
+                <div class="poatt-muted" style="margin-bottom:10px;">
+                    Read-only: you can view and download from the “Attachments Viewer”.
+                </div>
+                @endunless
+
+                {{-- DARK HERO (upload bar + drag area) — only for users who can update --}}
+                @can('update', $po)
                 <div class="poatt-hero">
                     <form id="poatt-form" class="poatt-uploadbar poatt-uploadbar--pretty">
                         <input type="file" name="files[]" id="poatt-files" class="poatt-file" multiple>
@@ -434,6 +487,7 @@ $taxLabelFull = $entry ? ($entry['full'].' ('.$entry['short'].') '.$rateTxt.'%')
                         </div>
                     </div>
                 </div>
+                @endcan
 
                 <!-- LIST (2-col grid, no view/download here, only delete) -->
                 <div id="poatt-list" class="poatt-list poatt-list--cards">

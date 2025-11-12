@@ -73,27 +73,34 @@
             border: 1px solid #e5e7eb;
             border-radius: 6px;
             padding: 0 10px 8px;
-            /* top=0 so the band sits flush */
             page-break-inside: avoid;
             overflow: hidden;
-            /* clip band corners cleanly */
         }
 
         .mini-title,
         .info-title {
-            font-weight: 700;
-            margin: 0 0 8px;
-            /* reset */
-            background: #0f3d56;
-            /* UTS blue */
-            color: #fff;
+            margin: 0;
             padding: 6px 10px;
-            margin-left: -10px;
-            /* stretch to box edges */
-            margin-right: -10px;
+            font-weight: 700;
+            background: #01305a;
+            color: #fff;
             border-bottom: 2px solid #0b2a3f;
-            border-top-left-radius: 6px;
-            border-top-right-radius: 6px;
+        }
+
+        .info-body {
+            padding: 8px 10px 10px;
+        }
+
+        .info-subtitle {
+            font-weight: 700;
+            background: #eaf2fb;
+            color: #0b2a3f;
+            border-left: 4px solid #01305a;
+            padding: 4px 8px;
+            margin: 8px 0 6px;
+            /* align with card edges */
+            border-radius: 4px;
+            page-break-inside: avoid;
         }
 
         .mini-line {
@@ -238,7 +245,7 @@
 
         /* blue header band */
         thead th {
-            background: #0f3d56;
+            background: #01305a;
             /* UTS blue */
             color: #fff;
             border-bottom: 2px solid #0b2a3f;
@@ -369,7 +376,7 @@
         }
 
         .sum-label {
-            background: #0f3d56;
+            background: #01305a;
             color: #fff;
             padding: 6px 10px;
             margin: 12px 0 6px;
@@ -380,7 +387,7 @@
 
         /* Supplier & Terms and Signatures */
         .section-title {
-            background: #0f3d56;
+            background: #01305a;
             color: #fff;
             padding: 6px 10px;
             font-weight: 700;
@@ -409,22 +416,45 @@
         }
 
         /* Info grid (Supplier Information + Payment/Delivery) */
-        .info-grid {
+        .info-grid.equal {
             display: table;
             width: 100%;
             table-layout: fixed;
             margin: 8px 0 10px;
         }
 
+        .info-grid.equal .info-col {
+            display: table-cell;
+            vertical-align: top;
+            padding: 0 8px;
+            /* ← gutter */
+        }
+
         .info-col {
             display: table-cell;
-            width: 100%;
+            width: 50%;
             vertical-align: top;
             padding-right: 10px;
         }
 
-        .info-col:last-child {
+        .info-grid.equal .info-col:first-child {
+            padding-left: 0;
+        }
+
+        .info-grid.equal .info-col:last-child {
             padding-right: 0;
+        }
+
+        /* Draw the card on the inner box again (no hacks) */
+        .info-grid.equal .info-box {
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            overflow: hidden;
+            /* so the title rounds perfectly */
+            padding: 0;
+            /* we'll pad the body, not the title */
+            min-height: 78mm;
+            page-break-inside: avoid;
         }
 
         .info-row {
@@ -469,7 +499,6 @@
             display: table;
             width: 100%;
             table-layout: fixed;
-            gap: 0;
         }
 
         .sig-col {
@@ -493,70 +522,118 @@
             color: #374151;
             margin-top: 2px;
         }
+
+        .sig-label {
+            font-weight: 700;
+            margin-top: 6px;
+        }
+
+        .sig-blank {
+            height: 10mm;
+        }
+
+        .sig-value {
+            margin-top: 2px;
+            color: #111827;
+        }
+
+        .sig-gap {
+            height: 22mm;
+        }
     </style>
 </head>
 
 <body>
     @php
-    // Rows & money helpers
-    $rows = $po->rows ?? collect();
-
-    // format "IDR 12.345" (no decimals for Rupiah)
-    $fmtIDR = fn (int $rupiah) => 'IDR ' . number_format($rupiah, 0, ',', '.');
-
-    // Subtotal in rupiah: sum(qty * unit_rupiah)
-    $subtotal = $rows->sum(function ($r) {
-    $qty = (float) ($r->qty ?? 0);
-    $unitRupiah = (int) ($r->price_aed ?? 0); // stored as whole rupiah
-    return (int) round($qty * $unitRupiah);
-    });
-
-    $rate = (float) ($po->ppn_rate ?? 0);
-    $taxAmt = (int) round($subtotal * $rate / 100);
-    $total = $subtotal + $taxAmt;
-
     use Illuminate\Support\Carbon;
-    $formattedDate = $po->po_date ? Carbon::parse($po->po_date)->format('d-m-Y') : '—';
 
-    // Map the selectable kinds to a readable label
-    $kind = strtolower((string)($po->tax_kind ?? 'ppn_pph'));
-    $kindFull = match ($kind) {
-    'pph' => 'Pajak Penghasilan (PPH)',
-    'ppn' => 'Pajak Pertambahan Nilai (PPN)',
-    'none' => '',
-    default => '',
+    // ---------- helpers (Indonesian formatting) ----------
+    $fmt4 = function ($n) {
+    $s = number_format((float)($n ?? 0), 4, '.', ','); // e.g. 34,111.7650
+    // trim trailing zeros and the dot if not needed
+    $s = preg_replace('/\.?0+$/', '', $s);
+    return 'IDR ' . $s; // e.g. 34,111.765
     };
 
-    // "PPN", "PPH", "VAT", or "PPN / PPH" + rate
-    $rateTxt = rtrim(rtrim(number_format((float)$po->ppn_rate, 2, '.', ''), '0'), '.');
-    $showTaxRow = ($kind !== 'none');
-    $taxLabel = $showTaxRow ? ($kindFull.' '.$rateTxt.'%') : '';
+    $fmt0 = function ($n) { // integers (no dp)
+    $i = (int) ($n ?? 0);
+    // -> 1,234,567 (comma thousands)
+    return 'IDR ' . number_format($i, 0, '.', ',');
+    };
 
-    // Amount-in-words (ID) fallback if controller didn't pass it
-    if (!isset($amountWords) || !is_string($amountWords) || $amountWords === '') {
-    $n = max((int) floor($total), 0); // use $total in rupiah
-    $s = ['nol','satu','dua','tiga','empat','lima','enam','tujuh','delapan','sembilan','sepuluh','sebelas'];
-    $terbilang = function($x) use (&$terbilang, $s) {
-    if ($x < 12) return $s[$x];
-        if ($x < 20) return $terbilang($x-10).' belas';
-        if ($x < 100) return $terbilang(intval($x/10)).' puluh'.($x%10 ? ' ' .$terbilang($x%10) : '' );
-        if ($x < 200) return 'seratus' .($x-100 ? ' ' .$terbilang($x-100) : '' );
-        if ($x < 1000) return $terbilang(intval($x/100)).' ratus'.($x%100 ? ' ' .$terbilang($x%100) : '' );
-        if ($x < 2000) return 'seribu' .($x-1000 ? ' ' .$terbilang($x-1000) : '' );
-        if ($x < 1000000) return $terbilang(intval($x/1000)).' ribu'.($x%1000 ? ' ' .$terbilang($x%1000) : '' );
-        if ($x < 1000000000) return $terbilang(intval($x/1000000)).' juta'.($x%1000000 ? ' ' .$terbilang($x%1000000) : '' );
-        if ($x < 1000000000000) return $terbilang(intval($x/1000000000)).' miliar'.($x%1000000000 ? ' ' .$terbilang($x%1000000000) : '' );
-        return $terbilang(intval($x/1000000000000)).' triliun'.($x%1000000000000 ? ' ' .$terbilang($x%1000000000000) : '' );
+    // safe int (handles strings with separators just in case)
+    $toInt = fn($v) => (int) preg_replace('/[^\d]/', '', (string) $v);
+
+    // date
+    $formattedDate = $po->po_date ? Carbon::parse($po->po_date)->format('d-m-Y') : '—';
+
+    // ---------- per-row amounts (rounded) ----------
+    $rows = $po->rows ?? collect();
+    $lines = [];
+    foreach ($rows as $r) {
+    $line = (int) round((float)($r->price_aed ?? 0) * (float)($r->qty ?? 0), 0);
+    $lines[] = $line;
+    }
+
+    // ---------- totals (match show.blade.php logic) ----------
+    $toNum = fn($v) => (float) preg_replace('/[^\d.]/', '', (string) $v);
+
+    // Recompute subtotal from SAVED DB values (same as show.blade.php)
+    $rows = $po->rows ?? collect();
+    $subtotalIDR = $rows->sum(function ($r) use ($toNum) {
+    $unit = $toNum($r->price_aed ?? 0);
+    $qty = $toNum($r->qty ?? 0);
+    return (int) round($unit * $qty);
+    });
+
+    // Use SAVED tax fields (same as show.blade.php)
+    $kindSaved = strtolower($po->tax_kind ?? 'ppn');
+    $manualSaved = (int) round((float) ($po->ppn_rate ?? 0));
+    $taxIDR = ($kindSaved === 'none') ? 0 : ($manualSaved > 0 ? $manualSaved : 0);
+    $totalIDR = (int) $subtotalIDR + (int) $taxIDR;
+
+    // labels
+    $taxLabelMap = ['ppn' => 'PPN', 'pph' => 'PPH', 'vat' => 'PPN'];
+    $taxLabel = ($kindSaved === 'none') ? '' : ($taxLabelMap[$kindSaved] ?? strtoupper($kindSaved));
+    $showTaxRow = $taxLabel !== '';
+
+    // ---------- Amount in Words (match show.blade.php with fallback) ----------
+    $totalInt = (int) $totalIDR;
+
+    // Fallback terbilang if intl is missing
+    $terbilang = function($n) {
+        $n = (int) $n;
+        $s = ['nol','satu','dua','tiga','empat','lima','enam','tujuh','delapan','sembilan','sepuluh','sebelas'];
+        $fn = function($x) use (&$fn,$s){
+        if ($x < 12) return $s[$x];
+            if ($x < 20) return $fn($x-10).' belas';
+            if ($x < 100) return $fn(intval($x/10)).' puluh'.($x%10?' '.$fn($x%10):'');
+            if ($x < 200) return ' seratus'.($x-100?' '.$fn($x-100):'');
+            if ($x < 1000) return $fn(intval($x/100)).' ratus'.($x%100?' '.$fn($x%100):'');
+            if ($x < 2000) return ' seribu'.($x-1000?' '.$fn($x-1000):'');
+            if ($x < 1000000) return $fn(intval($x/1000)).' ribu'.($x%1000?' '.$fn($x%1000):'');
+            if ($x < 1000000000) return $fn(intval($x/1000000)).' juta'.($x%1000000?' '.$fn($x%1000000):'');
+            if ($x < 1000000000000) return $fn(intval($x/1000000000)).' miliar'.($x%1000000000?' '.$fn($x%1000000000):'');
+            return $fn(intval($x/1000000000000)).' triliun'.($x%1000000000000?' '.$fn($x%1000000000000):'');
         };
-        $amountWords=ucfirst($terbilang($n)).' rupiah';
-        }
+        return $fn(max(0,$n));
+    };
 
+        try {
+            if (!class_exists(\NumberFormatter::class)) throw new \Exception(' intl missing');
+            $fmt=new \NumberFormatter('id', \NumberFormatter::SPELLOUT);
+            $words=$fmt->format($totalInt);
+            if ($words === false) throw new \Exception('spellout failed');
+            $amountWords = ucfirst($words).' rupiah';
+        } catch (\Throwable $e) {
+            $amountWords = ucfirst($terbilang($totalInt)).' rupiah';
+        }
         @endphp
 
         <div class="page-bg">
-        @if($bgData)
-        <img src="data:image/png;base64,{{ $bgData }}" alt="">
-        @endif
+            @if(!empty($bgData))
+            <img src="data:image/png;base64,{{ $bgData }}" alt="">
+            @endif
         </div>
 
         <div class="content">
@@ -564,125 +641,95 @@
                 <div class="head-left">
                     <h1>Purchase Order</h1>
                 </div>
-                <!-- <div class="head-right">Created: {{ $po->created_at?->format('d-m-Y H:i') }}</div> -->
             </div>
 
-            <div class="mini-grid stack">
-                {{-- Billing address (full width) – Address moved below PO Number; PPN/PPH+Date on right --}}
-                <div class="mini-col">
-                    <div class="mini-box">
-                        <div class="mini-title">Billing Address</div>
-
-                        <div class="mini-split">
-                            {{-- LEFT: PO Number + Address --}}
-                            <div class="cell">
-                                <div class="mini-line"><strong>PO Number:</strong> {{ $po->po_number }}</div>
-                                <div class="mini-line">
-                                    <strong>Address:</strong>
-                                    {!! $po->address ? nl2br(e($po->address)) : '—' !!}
-                                </div>
-                                <div class="mini-line"><strong>NPWP:</strong> 1000.0000.0070.1243</div>
-                            </div>
-
-                            {{-- RIGHT: PPN/PPH and Date --}}
-                            <div class="cell right">
-                                <div class="mini-line"><strong>Date:</strong> {{ $formattedDate }}</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="mini-col">
-                    <div class="mini-box">
-                        <div class="mini-title">Ship To</div>
-
-                        <div class="mini-line"><strong>PT. UNIVERSAL TRADE SERVICES</strong></div>
-
-                        @php $rec = trim((string)($po->ship_to_recipient ?? '')); @endphp
-                        @if($rec !== '')
-                        <div class="mini-line"><strong>Recipient:</strong> {{ $rec }}</div>
-                        @endif
-
-                        <div class="mini-line">
-                            @php
-                            $addr = trim((string)($po->ship_to_address ?? ''));
-                            $nitku = '1000000000701243000001';
-                            @endphp
-
-                            @if($addr !== '')
-                            {!! nl2br(e($addr)) !!}, NITKU: {{ $nitku }}
-                            @else
-                            NITKU: {{ $nitku }}
-                            @endif
-                        </div>
-
-                        @if(!empty($po->ship_to_phone))
-                        <div class="mini-line">Phone: {{ $po->ship_to_phone }}</div>
-                        @endif
-                    </div>
-                </div>
-            </div>
-
-            {{-- Supplier Information + Payment/Delivery (two-column cards) --}}
-            <div class="info-grid">
-                {{-- Left: Supplier Information --}}
+            <!-- === TWO CARDS: LEFT = Supplier, RIGHT = Buyer (Billing + Ship To) === -->
+            <div class="info-grid equal">
+                <!-- LEFT: Supplier Information -->
                 <div class="info-col">
                     <div class="info-box">
                         <div class="info-title">Supplier Information</div>
-
-                        <div class="info-row">
-                            <span class="info-label">Company Name</span>
-                            <span class="info-sep">:</span>
-                            <span class="info-value">{{ $po->sup_company }}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">Company Address</span>
-                            <span class="info-sep">:</span>
-                            <span class="info-value">{!! nl2br(e($po->sup_address)) !!}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">Phone Number</span>
-                            <span class="info-sep">:</span>
-                            <span class="info-value">{{ $po->sup_phone }}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">E-mail</span>
-                            <span class="info-sep">:</span>
-                            <span class="info-value">{{ $po->sup_email }}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">NPWP</span>
-                            <span class="info-sep">:</span>
-                            <span class="info-value">{{ $po->sup_npwp }}</span>
+                        <div class="info-body">
+                            <div class="info-row">
+                                <span class="info-label">Company Name</span>
+                                <span class="info-sep">:</span>
+                                <span class="info-value">{{ $po->sup_company }}</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Company Address</span>
+                                <span class="info-sep">:</span>
+                                <span class="info-value">{!! nl2br(e($po->sup_address)) !!}</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Phone Number</span>
+                                <span class="info-sep">:</span>
+                                <span class="info-value">{{ $po->sup_phone }}</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">E-mail</span>
+                                <span class="info-sep">:</span>
+                                <span class="info-value">{{ $po->sup_email }}</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">NPWP</span>
+                                <span class="info-sep">:</span>
+                                <span class="info-value">{{ $po->sup_npwp }}</span>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                @php
-                $payTerms = trim((string)($po->payment_terms ?? '100% Advance payment to be made in bank before dispatch of delivery.'));
-                $delTime = trim((string)($po->delivery_time ?? '14 working days from the date of payment'));
-                $delTerms = trim((string)($po->delivery_terms ?? 'Ex-works Dubai'));
-                @endphp
-
-                {{-- Right: Payment / Delivery (your existing values) --}}
+                <!-- RIGHT: Buyer Information (with plain Billing Address + Ship To) -->
                 <div class="info-col">
                     <div class="info-box">
-                        <div class="info-title">Payment / Delivery</div>
+                        <div class="info-title">Buyer Information</div>
+                        <div class="info-body">
+                            <div class="info-subtitle">Billing Address</div>
+                            <div class="info-row">
+                                <span class="info-label">PO Number</span><span class="info-sep">:</span>
+                                <span class="info-value">{{ $po->po_number }}</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Address</span><span class="info-sep">:</span>
+                                <span class="info-value">{!! $po->address ? nl2br(e($po->address)) : '—' !!}</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">NPWP</span><span class="info-sep">:</span>
+                                <span class="info-value">1000.0000.0070.1243</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Date</span><span class="info-sep">:</span>
+                                <span class="info-value">{{ $formattedDate }}</span>
+                            </div>
 
-                        <div class="info-row">
-                            <span class="info-label">Payment Terms</span>
-                            <span class="info-sep">:</span>
-                            <span class="info-value">{{ $payTerms }}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">Delivery Time</span>
-                            <span class="info-sep">:</span>
-                            <span class="info-value">{{ $delTime }}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">Delivery Terms</span>
-                            <span class="info-sep">:</span>
-                            <span class="info-value">{{ $delTerms }}</span>
+                            <div class="info-subtitle" style="margin-top:10px;">Ship To</div>
+                            <div class="info-row">
+                                <span class="info-label">Company</span><span class="info-sep">:</span>
+                                <span class="info-value"><strong>PT. UNIVERSAL TRADE SERVICES</strong></span>
+                            </div>
+                            @php
+                            $rec = trim((string)($po->ship_to_recipient ?? ''));
+                            $addr = trim((string)($po->ship_to_address ?? ''));
+                            $nitku = '1000000000701243000001';
+                            @endphp
+                            @if($rec !== '')
+                            <div class="info-row">
+                                <span class="info-label">Recipient</span><span class="info-sep">:</span>
+                                <span class="info-value">{{ $rec }}</span>
+                            </div>
+                            @endif
+                            <div class="info-row">
+                                <span class="info-label">Address</span><span class="info-sep">:</span>
+                                <span class="info-value">
+                                    @if($addr !== ''){!! nl2br(e($addr)) !!}, @endif NITKU: {{ $nitku }}
+                                </span>
+                            </div>
+                            @if(!empty($po->ship_to_phone))
+                            <div class="info-row">
+                                <span class="info-label">Phone</span><span class="info-sep">:</span>
+                                <span class="info-value">{{ $po->ship_to_phone }}</span>
+                            </div>
+                            @endif
                         </div>
                     </div>
                 </div>
@@ -709,18 +756,26 @@
                 <tbody>
                     @forelse ($rows as $r)
                     @php
-                    $unitRupiah = (int) ($r->price_aed ?? 0); // whole rupiah
-                    $qty = (float) ($r->qty ?? 0);
-                    $rowAmt = (int) round($unitRupiah * $qty);
+                    // formatters you defined earlier
+                    // $fmt4 = fn($n) => number_format((float)$n, 4, '.', ','); // example
+                    // $fmt0 = fn($n) => 'IDR ' . number_format((int)$n, 0, ',', '.');
+
+                    $unitStr = $fmt4($r->price_aed ?? 0); // unit price 4dp
+                    $qtyStr = rtrim(rtrim((string)($r->qty ?? '0'), '0'), '.'); // clean qty
+
+                    // Use stored integer amount; fallback recompute only if null
+                    $lineInt = (int) round((float)($r->price_aed ?? 0) * (float)($r->qty ?? 0), 0);
+
+                    $lineStr = $fmt0($lineInt); // "IDR 223,243"
                     @endphp
                     <tr>
                         <td class="center">{{ $loop->iteration }}</td>
                         <td>{{ $r->sku }}</td>
                         <td>{{ $r->brand }}</td>
                         <td class="col-desc">{{ $r->description }}</td>
-                        <td class="right">{{ $r->qty ?: 0 }}</td>
-                        <td class="right">{{ $unitRupiah ? $fmtIDR($unitRupiah) : 'IDR 0' }}</td>
-                        <td class="right">{{ $fmtIDR($rowAmt) }}</td>
+                        <td class="right">{{ rtrim(rtrim($qtyStr, '0'), '.') ?: '0' }}</td>
+                        <td class="right">{{ $unitStr }}</td>
+                        <td class="right">{{ $fmt0($lineInt) }}</td>
                     </tr>
                     @empty
                     <tr>
@@ -731,17 +786,17 @@
                 <tfoot>
                     <tr>
                         <th colspan="6" class="right">Subtotal</th>
-                        <td class="right"><strong>{{ $fmtIDR($subtotal) }}</strong></td>
+                        <td class="right"><strong>{{ $fmt0($subtotalIDR) }}</strong></td>
                     </tr>
                     @if($showTaxRow)
                     <tr>
                         <th colspan="6" class="right">{{ $taxLabel }}</th>
-                        <td class="right"><strong>{{ $fmtIDR($taxAmt) }}</strong></td>
+                        <td class="right"><strong>{{ $fmt0($taxIDR) }}</strong></td>
                     </tr>
                     @endif
                     <tr>
                         <th colspan="6" class="right">Total</th>
-                        <td class="right"><strong>{{ $fmtIDR($total) }}</strong></td>
+                        <td class="right"><strong>{{ $fmt0($totalIDR) }}</strong></td>
                     </tr>
                 </tfoot>
             </table>
@@ -753,17 +808,12 @@
 
             @php
             $terms = (string)($po->conditions_terms ?? '');
-
-            // Replace each TAB with four spaces
+            // tabs → 4 spaces
             $terms = str_replace("\t", str_repeat(' ', 4), $terms);
-
-            // Escape for HTML
             $terms_html = e($terms);
-
-            // Convert leading spaces/tabs on each line to &nbsp; so DomPDF keeps indents
-            // (^|\r?\n)([ \t]+) => start-of-text/newline + 1+ spaces/tabs
+            // preserve leading spaces per line
             $terms_html = preg_replace_callback('/(^|\r?\n)([ \t]+)/m', function ($m) {
-            $lead = str_replace("\t", str_repeat(' ', 4), $m[2]); // safety if tabs slipped through
+            $lead = str_replace("\t", str_repeat(' ', 4), $m[2]);
             return $m[1] . str_repeat('&nbsp;', strlen($lead));
             }, $terms_html);
             @endphp
@@ -777,14 +827,16 @@
 
             <div class="sig-section">
                 <div class="sig-grid">
-                    {{-- Left: Buyer (fixed) --}}
                     <div class="sig-col">
                         <div class="sig-name">Universal Trade Services</div>
-                        <div class="sig-meta">&nbsp;</div>
-                        <div class="sig-meta">Signature</div>
+
+                        <div class="sig-label">Name:</div>
+                        <div class="sig-label">Position:</div>
+                        <div class="sig-blank"></div> <!-- handwriting space -->
+
+                        <div class="sig-meta" style="margin-top:6mm;">Signature</div>
                     </div>
 
-                    {{-- Right: Accepted by supplier company --}}
                     <div class="sig-col" style="padding-left:12px;">
                         <div class="sig-title">This PO is accepted by</div>
                         <div class="sig-meta">Name:</div>

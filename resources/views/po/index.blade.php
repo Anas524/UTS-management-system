@@ -1,6 +1,8 @@
 @extends('layouts.app')
 @section('title','Purchase Orders')
 
+@php $isConsultant = auth()->user()?->role === 'consultant';  use App\Support\Num; @endphp
+
 @section('content')
 <div class="sheet-wrap">
   <div class="sheet-card">
@@ -39,8 +41,15 @@
         </form>
 
         <a href="{{ route('dashboard') }}" class="sheet-btn sheet-btn-ghost">← Back</a>
-        <a href="{{ route('po.create') }}" class="sheet-btn sheet-btn-outline">+ Create New PO</a>
+
+        @can('create', App\Models\PurchaseOrder::class)
+          <a href="{{ route('po.create') }}" class="sheet-btn sheet-btn-outline">+ Create New PO</a>
+        @endcan
       </div>
+      
+      @if($isConsultant)
+        <span class="sheet-head-note">Read-only mode: you can open POs and download files.</span>
+      @endif
     </div>
 
     @if(session('status'))
@@ -48,19 +57,21 @@
     @endif
 
     {{-- Totals bar (uses $subtotalFils, $taxFils, $totalFils from controller) --}}
-    @php $fmtMoney = fn(int $n)=> 'IDR '.number_format($n, 0, ',', '.'); @endphp
+    @php
+    $fmt = fn($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
+    @endphp
     <div class="stats-wrap stats-inline">
       <div class="stat-card">
         <div class="stat-label">Subtotal</div>
-        <div class="stat-value">{{ $fmtMoney($subtotalFils) }}</div>
+        <div class="stat-value">{{ $fmt($subtotalFils) }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">PPN / PPH (sum)</div>
-        <div class="stat-value">{{ $fmtMoney($taxFils) }}</div>
+        <div class="stat-label">Tax</div>
+        <div class="stat-value">{{ $fmt($taxFils) }}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Total</div>
-        <div class="stat-value">{{ $fmtMoney($totalFils) }}</div>
+        <div class="stat-value">{{ $fmt($totalFils) }}</div>
       </div>
     </div>
 
@@ -78,49 +89,61 @@
             <th>Date</th>
             <th>Company Name</th>
             <th class="right">Subtotal</th>
-            <th class="right">PPN / PPH %</th>
+            <th class="right">Tax</th>
             <th class="right">Total</th>
             <th>Status</th>
             <th class="right">Actions</th>
           </tr>
         </thead>
         <tbody>
+          @php
+            // Helpers
+            $fmt0  = fn($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
+          @endphp
+
           @forelse($list as $po)
           @php
-            $fmt = fn($n) => 'IDR '.number_format((int)$n, 0, ',', '.');
+            // 1) Subtotal — ALWAYS recompute from price * qty (rounded integer rupiah)
+            $rowSubtotalInt = (int) (($po->rows ?? collect())->sum(function ($r) {
+                $unit = (float)($r->price_aed ?? 0);
+                $qty  = (float)($r->qty ?? 0);
+                return (int) round($unit * $qty, 0);
+            }));
 
-            $rate = (float)($po->ppn_rate ?? 0);
-            $rateTxt = rtrim(rtrim(number_format($rate, 2, '.', ''), '0'), '.');
+            // 2) Tax — absolute IDR stored in ppn_rate
+            $kind   = strtolower($po->tax_kind ?? 'ppn');
+            $taxInt = ($kind === 'none') ? 0 : (int) round((float)($po->ppn_rate ?? 0));
 
-            // Subtotal in IDR from rows: sum(price_aed * qty)
-            $subtotalIDR = ($po->rows ?? collect())->sum(function($r){
-              $unit = (int)($r->price_aed ?? 0);
-              $qty = (float)($r->qty ?? 0);
-              return (int) round($unit * $qty);
-            });
+            // 3) Total — PPH subtracts, others add
+            $rowTotalInt = ($kind === 'pph')
+                ? max(0, $rowSubtotalInt - $taxInt)
+                : $rowSubtotalInt + $taxInt;
 
-            $kind = strtolower($po->tax_kind ?? 'ppn');
-            $taxIDR = ($kind === 'none') ? 0 : (int) round($subtotalIDR * $rate / 100);
-            $totalIDR = $subtotalIDR + $taxIDR;
-
-            $status = $po->status ?? 'open';
+            // Meta
+            $status     = $po->status ?? 'open';
             $badgeClass = match($status){
-              'closed' => 'badge badge-green',
-              'awaiting_response' => 'badge badge-amber',
-              'transferred' => 'badge badge-indigo',
-              default => 'badge badge-slate',
+                'closed' => 'badge badge-green',
+                'awaiting_response' => 'badge badge-amber',
+                'transferred' => 'badge badge-indigo',
+                default => 'badge badge-slate',
             };
-            $statusText = $po->status_label; // accessor
-            $dateStr = $po->po_date ? \Illuminate\Support\Carbon::parse($po->po_date)->format('d-m-y') : '—';
+            $statusText = $po->status_label;
+            $dateStr    = $po->po_date ? \Illuminate\Support\Carbon::parse($po->po_date)->format('d-m-y') : '—';
           @endphp
           <tr>
             <td class="center">{{ $rowNoStart + $loop->index }}</td>
             <td>{{ $po->po_number ?? $po->id }}</td>
             <td>{{ $dateStr }}</td>
             <td>{{ \Illuminate\Support\Str::limit($po->sup_company ?? '—', 48) }}</td>
-            <td class="right">{{ $fmt($subtotalIDR) }}</td>
-            <td class="right">{{ $rateTxt }}% ({{ $fmt($taxIDR) }})</td>
-            <td class="right">{{ $fmt($totalIDR) }}</td>
+            <td class="right">{{ $fmt0($rowSubtotalInt) }}</td>
+            <td class="right">
+              @if($kind === 'none')
+                No Tax
+              @else
+                {{ $fmt0($taxInt) }}
+              @endif
+            </td>
+            <td class="right">{{ $fmt0($rowTotalInt) }}</td>
             <td>
               <span class="{{ $badgeClass }}">{{ $statusText }}</span>
             </td>
@@ -130,7 +153,7 @@
           </tr>
           @empty
           <tr>
-            <td colspan="8" class="empty">No purchase orders yet.</td>
+            <td colspan="9" class="empty">No purchase orders yet.</td>
           </tr>
           @endforelse
         </tbody>

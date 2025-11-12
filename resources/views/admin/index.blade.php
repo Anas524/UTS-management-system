@@ -54,7 +54,7 @@
                 <td>{{ $u->name }}</td>
                 <td>{{ $u->email }}</td>
                 <td>{{ $u->created_at->format('Y-m-d') }}</td>
-                <td>{{ $u->is_admin ? 'Admin' : 'User' }}</td>
+                <td>{{ ucfirst($u->role ?? ($u->is_admin ? 'admin' : 'user')) }}</td>
               </tr>
             @empty
               <tr><td colspan="4" class="empty">No data</td></tr>

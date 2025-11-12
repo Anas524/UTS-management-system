@@ -1,137 +1,306 @@
 /* global jQuery */
 (function ($) {
-    // ---------- helpers ----------
+    // --- Single source of truth for readonly ---
+    const READ_ONLY = (function () {
+        // prefer explicit window flag from app.blade
+        if (typeof window.READ_ONLY !== 'undefined') return !!window.READ_ONLY;
+        // fallback: sheet-wrap data attr
+        const v = document.querySelector('.sheet-wrap')?.getAttribute('data-readonly');
+        return String(v) === 'true';
+    })();
+    window.READ_ONLY = READ_ONLY;
 
-    function labelForKind(kind) {
-        switch (String(kind || '').toLowerCase()) {
-            case 'none': return ''; // hidden row
-            case 'pph': return 'Pajak Penghasilan (PPH)';
-            case 'ppn': return 'Pajak Pertambahan Nilai (PPN)';
-            default: return 'PPN'; // safe fallback
+    // --- Always-on: Attachments menu + viewer (works for all roles) ---
+    initPoAttachments(); // call this BEFORE any early return
+
+    function initPoAttachments() {
+        // 1) shared state
+        window.poattState = window.poattState || { indexUrl: null, uploadUrl: null, csrf: null, items: [], idx: 0 };
+        window.poattViewer = window.poattViewer || { items: [], idx: 0, zoom: 1, fit: 'w' }; // <— move here
+
+        // ----- helpers you already have -----
+        function setAttCount(n) { const b = document.getElementById('poatt-count'); if (b) b.textContent = String(n); }
+        function fetchList(url) {
+            return $.getJSON(url).then(res => {
+                const items = Array.isArray(res) ? res : (res.items || []);
+                poattState.items = items;
+                // if upload modal is open, render list there (function you already have)
+                if ($('#poatt-list').length) renderPoattList(items);
+                setAttCount(items.length);
+                return items;
+            });
+        }
+
+        window.poattFetchList = fetchList;
+
+        // ===== two-pane viewer pieces (reuse your existing implementations) =====
+        // paste your renderSideList, updateZoomLabel, applyFitForImage, renderPreview, poOpenStacked here
+        // (unchanged from your current file)
+
+        // --- Menu open/close (dropdown) ---
+        $(document).on('click', '.att-trigger', function (e) {
+            // In READ_ONLY we’ll open viewer directly (handled below), so skip dropdown there
+            if (window.READ_ONLY) return;
+            e.stopPropagation();
+            const $wrap = $(this).closest('.att-actions');
+            const $menu = $wrap.find('.att-menu');
+            const isOpen = $menu.hasClass('is-open');
+
+            $('.att-menu').removeClass('is-open');
+            $('.att-actions').removeClass('open');
+            $('.att-trigger').attr('aria-expanded', 'false');
+
+            if (!isOpen) {
+                $menu.addClass('is-open');
+                $wrap.addClass('open');
+                $(this).attr('aria-expanded', 'true');
+            }
+        });
+
+        // outside click closes
+        $(document).off('click.attGlobal').on('click.attGlobal', function () {
+            $('.att-menu').removeClass('is-open');
+            $('.att-actions').removeClass('open');
+            $('.att-trigger').attr('aria-expanded', 'false');
+        });
+
+        // Manage uploads (only rendered for users who can update)
+        $(document).on('click', '.js-att-manage', function () {
+            const $t = $(this).closest('.att-actions').find('.att-trigger');
+            poattState.indexUrl = $t.data('index-url');
+            poattState.uploadUrl = $t.data('upload-url');
+            poattState.csrf = $t.data('csrf');
+            $('.att-menu').removeClass('is-open');
+            $('#poatt-upload').removeClass('poatt-hidden').attr('aria-hidden', 'false');
+            window.poattFetchList(window.poattState.indexUrl);
+        });
+
+        // View attachments (works for all roles)
+        function openViewerFromTrigger($btn) {
+            const endpoint = $btn.data('endpoint');
+            const bundle = $btn.data('bundle-url');
+            $.getJSON(endpoint)
+                .done(res => {
+                    const items = Array.isArray(res) ? res : (res.items || []);
+                    setAttCount(items.length);
+                    poOpenStacked(items, res?.bundle_url || bundle || null);
+                })
+                .fail(() => alert('Could not load attachments.'));
+        }
+
+        $(document).on('click', '.js-att-view', function () {
+            const $t = $(this).closest('.att-actions').find('.att-trigger');
+            $('.att-menu').removeClass('is-open');
+            openViewerFromTrigger($t);
+        });
+
+        // BONUS: avoid “0 flash” on badge if server gave us a count
+        document.addEventListener('DOMContentLoaded', () => {
+            const btn = document.querySelector('.att-trigger');
+            const badge = document.getElementById('poatt-count');
+            if (!btn || !badge) return;
+            const initial = btn.getAttribute('data-initial-count');
+            if (initial !== null) badge.textContent = initial;
+            window.updatePoAttCount = n => { if (badge) badge.textContent = String(n); };
+        });
+
+        // Side list click -> change file
+        $(document).off('click.poatt', '#poatt-side .poatt-itembtn')
+            .on('click.poatt', '#poatt-side .poatt-itembtn', function (e) {
+                e.preventDefault();
+                const i = Number($(this).data('i') || 0);
+                renderPreview(i);
+            });
+
+        // Close button
+        $(document).off('click.poatt', '#poatt-stacked .poatt-close')
+            .on('click.poatt', '#poatt-stacked .poatt-close', function (e) {
+                e.preventDefault();
+                const $m = $('#poatt-stacked');
+                $m.addClass('poatt-hidden').attr('aria-hidden', 'true');
+                // cleanup
+                $(window).off('resize.poatt');
+                $('#poatt-canvas').off('wheel.poatt');
+            });
+
+        // Click outside content to close
+        $(document).off('mousedown.poatt', '#poatt-stacked').on('mousedown.poatt', '#poatt-stacked', function (e) {
+            // close only if the backdrop itself was clicked
+            if (e.target === this) {
+                $('#poatt-stacked .poatt-close').trigger('click');
+            }
+        });
+
+        // ESC to close
+        $(document).off('keydown.poatt').on('keydown.poatt', function (e) {
+            if (e.key === 'Escape' && $('#poatt-stacked').is(':visible')) {
+                $('#poatt-stacked .poatt-close').trigger('click');
+            }
+        });
+
+        // Existing: open viewer directly in READ_ONLY
+        if (window.READ_ONLY) {
+            $(document).off('click.att_ro', '.att-trigger').on('click.att_ro', '.att-trigger', function (e) {
+                e.preventDefault();
+                openViewerFromTrigger($(this));
+            });
         }
     }
 
-    function setTaxLabel(kind, rate) {
-        const cleanRate = (Number(rate) || 0)
-            .toLocaleString('en-US', { maximumFractionDigits: 2 })
-            .replace(/\.00$/, '');
-        const title = labelForKind(kind);
-        // When hidden we won’t see this anyway, but keep it correct:
-        $('#ftTaxLabel').text((title ? title + ' ' : '') + cleanRate + '%');
+    function initMonthFilterDropdown() {
+        const wraps = document.querySelectorAll('.dd-month .ddm');
+        if (!wraps.length) return;
+        wraps.forEach((wrap) => {
+            if (wrap.dataset.ddmInited === '1') return;
+            wrap.dataset.ddmInited = '1';
+
+            const trigger = wrap.querySelector('.ddm__trigger');
+            const menu = wrap.querySelector('.ddm__menu');
+            const label = wrap.querySelector('.ddm__text');
+            const hidden = document.getElementById('monthVal');
+
+            const open = () => { menu.classList.add('is-open'); wrap.setAttribute('aria-expanded', 'true'); };
+            const close = () => { menu.classList.remove('is-open'); wrap.setAttribute('aria-expanded', 'false'); };
+
+            trigger.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isOpen = menu.classList.contains('is-open');
+                document.querySelectorAll('.ddm__menu.is-open').forEach(m => m.classList.remove('is-open'));
+                isOpen ? close() : open();
+            });
+
+            menu.addEventListener('click', (e) => {
+                const item = e.target.closest('.ddm__item');
+                if (!item) return;
+                hidden && (hidden.value = item.getAttribute('data-value'));
+                label && (label.textContent = item.textContent.trim());
+                menu.querySelectorAll('.ddm__item').forEach(i => i.classList.remove('is-active'));
+                item.classList.add('is-active');
+                close();
+                document.getElementById('poMonthFilter')?.submit();
+            });
+
+            document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) close(); });
+            trigger.addEventListener('keydown', (e) => {
+                if (['Enter', ' '].includes(e.key)) { e.preventDefault(); open(); }
+                if (e.key === 'Escape') close();
+            });
+        });
+    }
+
+    initMonthFilterDropdown();                    // immediate try
+    $(initMonthFilterDropdown);                   // DOM-ready fallback
+    window.addEventListener('load', initMonthFilterDropdown); // full-load fallback
+
+    if (READ_ONLY) {
+        $('#poHdrForm, #poRowsTbl').find('input:not([type="hidden"]), textarea, select')
+            .prop('readonly', true).prop('disabled', true).addClass('locked-input');
+        $('#jsAddRow, .icon-save, .icon-del, [type="submit"][form="poHdrForm"]')
+            .prop('disabled', true).addClass('is-disabled');
+        $('.status-trigger, .status-item, .tax-kind-btn')
+            .addClass('is-disabled').attr('aria-disabled', 'true');
+        $('#poHdrForm, .row-form, form.js-confirm').on('submit', e => { e.preventDefault(); return false; });
+
+        return; // ← critical: prevents recalc() & listeners from attaching
+    }
+
+    // ---------- helpers ----------
+
+    // Decimal normalizer for unit price (dot = decimal separator)
+    function normDec(val) {
+        if (val == null) return '0';
+        let s = String(val).trim();
+        // remove currency text/spaces
+        s = s.replace(/idr|rp|\s/gi, '');
+        // treat comma as decimal if there is no dot
+        if (s.includes(',') && !s.includes('.')) s = s.replace(',', '.');
+        // strip everything except digits and one dot
+        s = s.replace(/[^0-9.]/g, '');
+        const firstDot = s.indexOf('.');
+        if (firstDot !== -1) {
+            // remove any extra dots after the first
+            s = s.slice(0, firstDot + 1) + s.slice(firstDot + 1).replace(/\./g, '');
+        }
+        // empty or lone dot -> 0
+        if (s === '' || s === '.') s = '0';
+        return s;
+    }
+
+    // Pretty print decimal without thousands grouping, up to 4 dp
+    function fmtDec(n, maxDp = 4) {
+        const x = Number(n);
+        if (!isFinite(x)) return '0';
+        // toFixed then trim trailing zeros
+        let s = x.toFixed(maxDp);
+        s = s.replace(/\.?0+$/, '');
+        return s;
+    }
+
+    // "IDR 1,234,567" – integer only
+    function fmtIDRInt(n) {
+        const x = Math.round(Number(n) || 0);
+        return 'IDR ' + x.toLocaleString('en-US');
+    }
+
+    // "IDR 34,111.765" (up to 4 dp, trims trailing zeros)
+    function fmtIDRGroup(n) {
+        const x = Number(n) || 0;
+        // to 4 dp then trim zeros
+        let s = x.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+        const parts = s.split('.');
+        const intFmt = Number(parts[0] || 0).toLocaleString('en-US'); // 34,111
+        return 'IDR ' + (parts[1] ? intFmt + '.' + parts[1] : intFmt);
+    }
+
+    function setTaxLabel(kind) {
+        const map = { ppn: 'PAJAK PERTAMBAHAN NILAI (PPN)', pph: 'PAJAK PENGHASILAN (PPH)', none: 'NO TAX' };
+        $('#tax-kind-label-text').text(map[(kind || 'ppn').toLowerCase()] || map.ppn);
     }
 
     function recalcCurrencyRow($tr) {
-        const qty = parseFloat(($tr.find('input[name*="[qty]"], input[name="qty"]').val() || '').replace(',', '.')) || 0;
-        const unit = parseFloat(normalizeMoneyStr($tr.find('input[name*="[price_aed]"], input[name="price_aed"]').val())) || 0;
+        const qty = parseFloat(String($tr.find('input[name*="[qty]"], input[name="qty"]').val() || '').replace(',', '.')) || 0;
+        const unit = parseFloat(normDec($tr.find('input[name*="[price_aed]"], input[name="price_aed"]').val())) || 0;
         const total = qty * unit;
-        $tr.find('.amount-aed').text(
-            'IDR ' + total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
-        );
-    }
-
-    function numberToWordsEN(n) {
-        n = Math.floor(Math.abs(Number(n) || 0));
-        if (n === 0) return 'zero';
-        const a = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
-            'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
-        const b = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
-        function chunk(x) {
-            let str = '', h = Math.floor(x / 100), r = x % 100, t = Math.floor(r / 10), u = r % 10;
-            if (h) str += a[h] + ' hundred';
-            if (r) { if (str) str += ' '; if (r < 20) str += a[r]; else { str += b[t]; if (u) str += '-' + a[u]; } }
-            return str;
-        }
-        const units = ['', ' thousand', ' million', ' billion', ' trillion'];
-        let words = [], i = 0;
-        while (n > 0 && i < units.length) {
-            const c = n % 1000;
-            if (c) words.unshift(chunk(c) + units[i]);
-            n = Math.floor(n / 1000); i++;
-        }
-        return words.join(' ');
-    }
-
-    // Safe normalizer (in case it doesn’t exist on this page)
-    if (typeof normalizeMoneyStr !== 'function') {
-        function normalizeMoneyStr(s) {
-            if (s == null) return '0';
-            s = String(s).replace(/[^\d,.\- ,]/g, '').trim();
-            if (s.includes(',') && !s.includes('.')) {
-                // "12,34" -> "12.34"
-                s = s.replace(',', '.');
-            } else {
-                // remove thousands commas
-                s = s.replace(/,/g, '');
-            }
-            return s || '0';
-        }
+        const totalInt = Math.round(total);
+        $tr.find('.amount-aed').text(fmtIDRInt(totalInt));
     }
 
     function recalc() {
         let subtotal = 0;
 
-        const fmtIDR = v =>
-            'IDR ' + Number(v || 0).toLocaleString('en-US', {
-                minimumFractionDigits: 0, maximumFractionDigits: 0
-            });
-
+        // per-row totals (sum integers)
         $('#poRowsTbl tbody tr').each(function () {
             const $tr = $(this);
+            const qty = parseFloat(String($tr.find('input[name="qty"], input[name*="[qty]"]').val() || '').replace(',', '.')) || 0;
+            const unit = parseFloat(normDec($tr.find('input[name="price_aed"], input[name*="[price_aed]"]').val())) || 0;
 
-            // read qty + unit using the same normalization as elsewhere
-            const qty = parseFloat(($tr.find('input[name="qty"], input[name*="[qty]"]').val() || '')
-                .toString().replace(',', '.')) || 0;
-
-            const unit = parseFloat(normalizeMoneyStr(
-                $tr.find('input[name="price_aed"], input[name*="[price_aed]"]').val()
-            )) || 0;
-
-            const rowTotal = qty * unit;
-            subtotal += rowTotal;
-
-            // always push the per-row total into the cell
-            $tr.find('.amount-aed').text(fmtIDR(rowTotal));
+            const rowTotalInt = Math.round(qty * unit);
+            subtotal += rowTotalInt;
+            $tr.find('.amount-aed').text(fmtIDRInt(rowTotalInt));
         });
 
-        const kind = ($('input[name="tax_kind"], select[name="tax_kind"]').val() || 'ppn').toLowerCase();
-        const rate = Number($('input[name="ppn_rate"]').val() || 0);
+        // manual tax → integer rupiah
+        const kind = getTaxKindSafe();
+        setTaxLabel(kind);
+        let tax = 0;
+        if (kind !== 'none') tax = Math.round(parseFloat(normDec($('#taxAmount').val() || '0')) || 0);
 
-        // keep the label synced (PPN / PPH X%)
-        setTaxLabel(kind, rate);
-
-        // toggle tax row visibility
-        if (kind === 'none') { $('#taxRow').addClass('is-hidden'); }
-        else { $('#taxRow').removeClass('is-hidden'); }
-
-        const tax = (kind === 'none') ? 0 : (subtotal * rate / 100);
+        // footer
         const total = subtotal + tax;
+        $('#ftSubtotal').text(fmtIDRInt(subtotal));
+        if (!$('#ftTax').find('input').length) $('#ftTax').text(fmtIDRInt(tax));
+        $('#ftTotal').text(fmtIDRInt(total));
 
-        $('#ftSubtotal').text(fmtIDR(subtotal));
-        $('#ftTax').text(fmtIDR(tax));
-        $('#ftTotal').text(fmtIDR(total));
-
-        if (typeof updateAmountWordsAED === 'function') {
-            updateAmountWordsAED(total);
-        }
+        if (typeof updateAmountWordsIDR === 'function') updateAmountWordsIDR(total);
     }
-
-    // Live bindings (call once on DOM ready)
-    $(document).on('input change', 'input[name="ppn_rate"]', function () {
-        recalc();
-    });
 
     // Recalc when qty / price change (delegated so new rows work too)
     $(document).on(
-        'input change',
+        'change',
         '#poRowsTbl input[name="price_aed"], #poRowsTbl input[name*="[price_aed]"], ' +
         '#poRowsTbl input[name="qty"], #poRowsTbl input[name*="[qty]"]',
         recalc
     );
-
-    // Tax kind select: just recalc
-    $(document).on('change', 'select[name="tax_kind"]', function () {
-        recalc();
-    });
 
     // On load: just recalc once
     $(function () {
@@ -156,30 +325,56 @@
         return terbilang(n);
     }
 
-    function updateAmountWordsAED(totalNumber) {
-        const rupiah = numberToWordsID(Math.floor(Math.abs(Number(totalNumber) || 0)));
-        if (rupiah) {
-            const txt = rupiah.charAt(0).toUpperCase() + rupiah.slice(1) + ' rupiah';
-            $('#amountWords').text(txt);
+    function updateAmountWordsIDR(totalNumber) {
+        const n = Math.abs(Number(totalNumber) || 0);
+
+        const whole = Math.floor(n);
+        let words = numberToWordsID(whole);
+        if (!words) return;
+
+        // Build fractional part as spoken digits: e.g. 0.9576 -> "koma sembilan lima tujuh enam"
+        const fracStr = (n - whole).toFixed(4).slice(2).replace(/0+$/, ''); // keep up to 4 dp, trim trailing zeros
+        if (fracStr) {
+            const fracWords = fracStr.split('')
+                .map(d => numberToWordsID(parseInt(d, 10)))
+                .join(' ');
+            words += ' rupiah koma ' + fracWords;
+        } else {
+            words += ' rupiah';
         }
+
+        // Capitalize first letter
+        words = words.charAt(0).toUpperCase() + words.slice(1);
+        $('#amountWords').text(words);
     }
 
-    function prettyAED(s) { s = normalizeMoneyStr(s); return s ? 'IDR ' + s : ''; }
-
+    // 2) Blur/commit → do per-field finalization, then full footer recompute
     $(document).on('blur',
-        '#poRowsTbl input[name="price_aed"], #poRowsTbl input[name*="[price_aed]"]',
-        function () { this.value = prettyAED(this.value); recalc(); }
+        '#poRowsTbl input[name="price_aed"], #poRowsTbl input[name*="[price_aed]"], ' +
+        '#poRowsTbl input[name="qty"], #poRowsTbl input[name*="[qty]"]',
+        function () {
+            if (this.name === 'price_aed' || /\[price_aed\]/.test(this.name)) {
+                this.value = fmtDec(normDec(this.value), 4);  // price
+            } else if (this.name === 'qty' || /\[qty\]/.test(this.name)) {
+                // keep up to 4dp, trim zeros
+                const v = (this.value || '').toString().replace(',', '.');
+                this.value = fmtDec(v, 4);
+            }
+            recalc();
+        }
     );
 
-    function applyPreparedNameToPage(name) {
-        const clean = (name || '').trim();
-        document.querySelectorAll('.js-prep').forEach(el => {
-            const fallback = el.getAttribute('data-fallback') || 'the purchaser';
-            el.textContent = clean !== '' ? clean : fallback;
-        });
-    }
+    // 3) Tax: live typing updates totals; blur snaps to plain digits (1.234.567 → 1234567)
+    $(document).on('input', '#taxAmount', recalc);
 
-    $(document).on('input blur',
+    $(document).on('blur', '#taxAmount', function () {
+        const v = Math.round(Number(normDec(this.value)) || 0);
+        this.value = String(v);            // store as plain digits
+        recalc();
+    });
+
+    // 1) Live typing → lightweight per-row recompute (no footer)
+    $(document).on('input',
         '#poRowsTbl input[name="price_aed"], #poRowsTbl input[name*="[price_aed]"], ' +
         '#poRowsTbl input[name="qty"], #poRowsTbl input[name*="[qty]"]',
         function () { recalcCurrencyRow($(this).closest('tr')); }
@@ -207,12 +402,10 @@
 
         // --- per-row currency total ---
         function recalcCreateRow($tr) {
-            const qty = parseFloat(($tr.find('input[name*="[qty]"]').val() || '').replace(',', '.')) || 0;
-            const unit = parseFloat(normalizeMoneyStr($tr.find('input[name*="[price_aed]"]').val())) || 0;
+            const qty = parseFloat(String($tr.find('input[name*="[qty]"]').val() || '').replace(',', '.')) || 0;
+            const unit = parseFloat(normDec($tr.find('input[name*="[price_aed]"]').val())) || 0;
             const total = qty * unit;
-            $tr.find('.amount-aed').text(
-                'IDR ' + total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
-            );
+            $tr.find('.amount-aed').text(fmtIDRGroup(total));
         }
 
         function renumberCreate() {
@@ -265,13 +458,13 @@
                     this.name = this.name.replace(/rows\[\d+\]/, 'rows[' + i + ']');
                 });
 
-                // unit price → plain decimal (no currency/commas)
+                // unit price → keep DECIMAL string
                 const $p = $(this).find('input[name$="[price_aed]"]');
-                if ($p.length) $p.val(normalizeMoneyStr($p.val()));
+                if ($p.length) $p.val(normDec($p.val()));
 
-                // qty → plain number string (no commas). Keep '' if truly empty.
+                // qty → normalize decimal (allow dot)
                 const $q = $(this).find('input[name$="[qty]"]');
-                if ($q.length) $q.val(($q.val() || '').replace(/,/g, '').trim());
+                if ($q.length) $q.val(($q.val() || '').toString().replace(',', '.').trim());
             });
         });
 
@@ -285,7 +478,39 @@
             const $supVis = $('#supCompanyVis');
             const $supHid = $('#supCompany');
             const $menu = $('#supMenu');
+            const $auto = $supVis.closest('.auto-wrap'); // wrapper around the field + menu
             const $tbody = $('#poRowsTbl tbody');
+
+            let supHot = false; // user is intentionally in the supplier box
+            let lastSupPointerTs = 0;          // last real mouse/touch inside the box
+
+            function isSupFocused() {
+                return supHot && document.activeElement === $supVis[0];
+            }
+
+            // hot-zone tracking
+            $auto.on('pointerdown focusin', () => { supHot = true; lastSupPointerTs = Date.now(); });
+            $auto.on('focusout', (e) => {
+                if (!$auto[0].contains(e.relatedTarget)) { supHot = false; $menu.prop('hidden', true); }
+            });
+
+            // global outside click/focus hides
+            $(document).on('pointerdown focusin', function (e) {
+                if (!$(e.target).closest('.auto-wrap').length) {
+                    supHot = false;
+                    $menu.prop('hidden', true);
+                }
+            });
+
+            $supVis.on('focusin', async function () {
+                if (!isSupFocused()) return;
+                const typed = ($supVis.val() || '').trim();
+                const userClicked = (Date.now() - lastSupPointerTs) < 400;
+                if (userClicked || typed) {
+                    const list = await apiFind(typed || '');
+                    renderSupplierList(list, { force: true });
+                }
+            });
 
             function apiFind(q) {
                 return $.ajax({
@@ -304,7 +529,7 @@
                 }).catch(() => null);
             }
 
-            function renderList(list) {
+            function renderSupplierList(list, opts = {}) {
                 const items = list.length ? list : [{ _no: true, sup_company: 'No matches' }];
                 const html = items.map(r => r._no
                     ? `<div class="item" data-id="">${r.sup_company}</div>`
@@ -316,15 +541,16 @@
                         data-sup_email="${(r.sup_email || '').replace(/"/g, '&quot;')}"
                         data-sup_npwp="${(r.sup_npwp || '').replace(/"/g, '&quot;')}">
                         <div>${r.sup_company || ''}</div>
-                        ${r.po_date || r.po_number ? `<div class="meta">${[r.po_date, r.po_number].filter(Boolean).join(' • ')}</div>` : ''}
                     </div>`
                 ).join('');
-                $menu.html(html).prop('hidden', false);
+
+                $menu.html(html);
+                $menu.prop('hidden', !(opts.force && isSupFocused()) && !isSupFocused());
             }
 
             function fillSupplierOnly(p) {
-                $supVis.val(p.sup_company || '');
-                $supHid.val(p.sup_company || '');
+                $('#supCompanyVis').val(p.sup_company || '');
+                $('#supCompany').val(p.sup_company || ''); // keep hidden in sync
                 $('[name="sup_address"]').val(p.sup_address || '');
                 $('[name="sup_phone"]').val(p.sup_phone || '');
                 $('[name="sup_email"]').val(p.sup_email || '');
@@ -402,45 +628,59 @@
                 recalc();
             }
 
-            // open on focus (recent)
-            $supVis.on('focus', async function () {
-                renderList(await apiFind(''));
-            });
-
             // filter on input
             const debounce = (f, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; };
             $supVis.on('input', debounce(async function () {
-                renderList(await apiFind($(this).val().trim()));
+                if (!isSupFocused()) { $menu.prop('hidden', true); return; }
+                const q = $(this).val().trim();
+                const list = await apiFind(q || '');         // empty → recent
+                renderSupplierList(list, { force: true });
             }, 150));
 
-            // pick
+            $menu.on('mousedown', '.item', e => e.preventDefault()); // avoid blur before click
             $menu.on('click', '.item', async function () {
-                const id = $(this).data('id');
-                if (!id) { $menu.prop('hidden', true); return; }
+                const $it = $(this);
+                const id = $it.data('id');
+                if (!id) { $menu.prop('hidden', true); supHot = false; return; }
 
-                // Fill supplier fields immediately for snappy UX…
+                // Fill left box immediately
                 fillSupplierOnly({
-                    sup_company: $(this).data('sup_company') || '',
-                    sup_address: $(this).data('sup_address') || '',
-                    sup_phone: $(this).data('sup_phone') || '',
-                    sup_email: $(this).data('sup_email') || '',
-                    sup_npwp: $(this).data('sup_npwp') || '',
+                    sup_company: readData($it, 'sup_company'),
+                    sup_address: readData($it, 'sup_address'),
+                    sup_phone: readData($it, 'sup_phone'),
+                    sup_email: readData($it, 'sup_email'),
+                    sup_npwp: readData($it, 'sup_npwp')
                 });
 
-                // …then fetch full PO and hydrate the whole form
+                console.log('Picked:', {
+                    id,
+                    sup_company: readData($it, 'sup_company'),
+                    sup_address: readData($it, 'sup_address'),
+                    sup_phone: readData($it, 'sup_phone'),
+                    sup_email: readData($it, 'sup_email'),
+                    sup_npwp: readData($it, 'sup_npwp')
+                });
+
+                // Then hydrate whole form from server (if available)
                 const full = await apiGet(id);
                 if (full) fillEntireForm(full);
 
                 $menu.prop('hidden', true);
+                supHot = false;
             });
 
-            // Close on ESC
-            $supVis.on('keydown', function (e) {
-                if (e.key === 'Escape') { $menu.prop('hidden', true); this.blur(); }
+            $supVis.on('keydown', async function (e) {
+                if (!isSupFocused()) return;
+                if (e.key === 'ArrowDown' || e.key === 'Enter') {
+                    e.preventDefault();
+                    const typed = ($supVis.val() || '').trim();
+                    const list = await apiFind(typed || '');
+                    renderSupplierList(list, { force: true });
+                }
             });
 
             // Delay close on blur (so menu clicks register)
-            $supVis.on('blur', function () { setTimeout(() => $menu.prop('hidden', true), 120); });
+            $supVis.on('blur', () => setTimeout(() => $menu.prop('hidden', true), 120));
 
             // Keep hidden value synced on manual typing
             if ($supVis.length && $supHid.length && !$supVis.val()) {
@@ -460,7 +700,7 @@
         $('#poRowsTbl').on('submit', 'form.row-form', function () {
             const $f = $(this);
             const $usd = $f.find('input[name="price_aed"]');
-            if ($usd.length) $usd.val(normalizeMoneyStr($usd.val()));
+            if ($usd.length) $usd.val(normDec($usd.val()));
         });
 
         // Add row (AJAX)
@@ -478,8 +718,10 @@
             }).done(function (res) {
                 if (!res || !res.row) return;
                 const r = res.row;
-                const i = $('#poRowsTbl tbody tr').length + 1;
-                const usdPretty = (r.price_aed != null) ? ('IDR ' + (r.price_aed / 100).toFixed(2)) : '';
+                // prefer DB row number (unique per sheet); fallback to client count
+                const i = (r.no != null) ? r.no : ($('#poRowsTbl tbody tr').length + 1);
+
+                const usdPretty = (r.price_aed != null) ? fmtDec(normDec(r.price_aed)) : '';
                 const updateUrl = updateT.replace('__ROW__', r.id);
                 const deleteUrl = deleteT.replace('__ROW__', r.id);
 
@@ -520,7 +762,10 @@
                 $('#poRowsTbl tbody').append(rowHtml);
                 recalcCurrencyRow($('#poRowsTbl tbody tr').last());
                 recalc();
-            }).fail(function () { alert('Could not add row.'); });
+            }).fail(function (xhr) {
+                console.error('Add row failed:', xhr.status, xhr.responseText);
+                alert('Could not add row.');
+            });
         });
 
         // Delete a row (AJAX)
@@ -548,6 +793,13 @@
         });
     }
 
+    function getTaxKindSafe() {
+        let k = String($('#tax-kind').val() || $('.tax-kind-btn.is-active').data('val') || '').trim().toLowerCase();
+        if (!/^(ppn|pph|none)$/.test(k)) k = 'ppn';  // fallback to a valid value
+        $('#tax-kind').val(k); // keep DOM in sync just in case
+        return k;
+    }
+
     // ==== BULK SAVE (header + all rows) on "Save PO" ====
     $(document).on('submit', '#poHdrForm', function (e) {
         e.preventDefault();
@@ -555,6 +807,9 @@
         var $form = $(this);
         var url = $form.data('update-url');
         var csrf = $form.data('csrf');
+
+        var kind = getTaxKindSafe();
+        var manualTax = normDec($('#taxAmount').val() || '');
 
         // 1) Collect header fields
         var payload = {
@@ -564,10 +819,11 @@
             po_number: $('input[name="po_number"]').val() || '',
             po_date: $('input[name="po_date"]').val() || '',
             address: ($('textarea[name="address"]').val() ?? $('input[name="address"]').val() ?? ''),
-            ppn_rate: $('input[name="ppn_rate"]').val() || '',
-            tax_kind: $('input[name="tax_kind"], select[name="tax_kind"]').val() || 'ppn',
+            ppn_rate: (kind === 'none') ? '' : (manualTax || '0'),
+            tax_kind: kind,
             status: $('input[name="status"]').val() || 'open',
 
+            // Supplier
             sup_company: $('input[name="sup_company"]').val() || '',
             sup_address: $('textarea[name="sup_address"]').val() || '',
             sup_phone: $('input[name="sup_phone"]').val() || '',
@@ -588,6 +844,8 @@
             conditions_terms: $('textarea[name="conditions_terms"]').val() || '',
         };
 
+        delete payload.tax_value_idr;
+
         // 2) Collect ALL visible rows from the table
         payload.rows = [];
         $('#poRowsTbl tbody tr').each(function () {
@@ -597,12 +855,15 @@
             var brand = $tr.find('input[name="brand"]').val() || '';
             var desc = $tr.find('textarea[name="description"]').val() || '';
             var qty = $tr.find('input[name="qty"]').val() || '';
+            // normalize qty: allow one decimal dot, convert comma → dot, strip junk
+            qty = qty.toString().trim().replace(',', '.');
+            qty = qty.replace(/[^0-9.]/g, '');
+            var d = qty.indexOf('.');
+            if (d !== -1) qty = qty.slice(0, d + 1) + qty.slice(d + 1).replace(/\./g, '');
+            if (qty === '' || qty === '.') qty = '0';
             var unit = $tr.find('input[name="unit"]').val() || '';
 
-            var aed = ($tr.find('input[name="price_aed"]').val() || '');
-            aed = (aed + '').replace(/[^\d.,-]/g, '');
-            if (aed.indexOf(',') !== -1 && aed.indexOf('.') === -1) aed = aed.replace(',', '.');
-            else aed = aed.replace(/,/g, '');
+            var aed = normDec($tr.find('input[name="price_aed"]').val() || '');
 
             var keep = $.trim(desc) !== '' || $.trim(qty) !== '' || $.trim(sku) !== '' || $.trim(brand) !== '';
             if (!keep) return;
@@ -678,14 +939,7 @@
     });
 
     // ----- PO Attachments modal -----
-    // ---- State
-    let poattState = {
-        indexUrl: null,
-        uploadUrl: null,
-        csrf: null,
-        items: [],
-        idx: 0
-    };
+    const poattState = (window.poattState = window.poattState || { indexUrl: null, uploadUrl: null, csrf: null, items: [], idx: 0 });
 
     function openModal($m) { $m.removeClass('poatt-hidden').attr('aria-hidden', 'false'); }
     function closeModal($m) { $m.addClass('poatt-hidden').attr('aria-hidden', 'true'); }
@@ -693,7 +947,7 @@
     // ----- LIST (upload/manage) -----
     // modern 2-col card list (no view/download buttons here—only delete)
 
-    function renderList(rawItems) {
+    function renderPoattList(rawItems) {
         const $list = $('#poatt-list').empty().addClass('poatt-list--cards'); // ensure 2-col grid
         const items = Array.isArray(rawItems) ? rawItems : (rawItems?.items || []);
 
@@ -724,25 +978,15 @@
         });
     }
 
-    function fetchList(url) {
-        return $.getJSON(url).then(res => {
-            const items = Array.isArray(res) ? res : (res.items || []);
-            poattState.items = items;
-            renderList(items);
-            setAttCount(items.length);
-            return items;
-        });
-    }
-
     // Open upload/manage modal (paperclip)
     $(document).on('click', '.js-poatt-open-upload', function () {
         const $btn = $(this);
-        poattState.indexUrl = $btn.data('index-url');
-        poattState.uploadUrl = $btn.data('upload-url');
-        poattState.csrf = $btn.data('csrf');
+        window.poattState.indexUrl = $btn.data('index-url');
+        window.poattState.uploadUrl = $btn.data('upload-url');
+        window.poattState.csrf = $btn.data('csrf');
 
         openModal($('#poatt-upload'));
-        fetchList(poattState.indexUrl);
+        window.poattFetchList(window.poattState.indexUrl);
     });
 
     // close modal (same as before)
@@ -807,7 +1051,7 @@
         }).done(() => {
             $('#poatt-files').val('');
             $('#poatt-msg').text('Uploaded ✓');
-            fetchList(poattState.indexUrl);
+            window.poattFetchList(window.poattState.indexUrl);
             setTimeout(() => $('#poatt-msg').text(''), 900);
         }).fail(() => {
             $('#poatt-msg').text('Upload failed');
@@ -824,13 +1068,11 @@
             method: 'POST',
             data: { _method: 'DELETE', _token: poattState.csrf },
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        }).done(() => fetchList(poattState.indexUrl))
+        }).done(() => window.poattFetchList(window.poattState.indexUrl))
             .fail(() => alert('Delete failed.'));
     });
 
     // ===== New two-pane viewer =====
-
-    let poattViewer = { items: [], idx: 0, zoom: 1, fit: 'w' };
 
     function renderSideList() {
         const $side = $('#poatt-side').empty();
@@ -947,7 +1189,13 @@
 
         } else {
             // PDF or other doc: use built-in viewer toolbar
-            const src = view ? (view + (view.includes('#') ? '' : '#') + 'toolbar=1&navpanes=0&view=FitH') : '';
+            const src = view
+                ? (() => {
+                    const hasHash = view.includes('#');
+                    const joiner = hasHash ? '&' : '#';
+                    return `${view}${joiner}toolbar=1&navpanes=0&view=FitH`;
+                })()
+                : '';
             const $iframe = $(`<iframe class="poatt-pdf" src="${src}" loading="eager"></iframe>`);
             $canvas.append($iframe);
 
@@ -973,26 +1221,6 @@
         $m.removeClass('poatt-hidden').attr('aria-hidden', 'false');
     }
 
-    // Side list click -> load selected
-    $(document).on('click', '#poatt-side .poatt-itembtn', function () {
-        const i = Number($(this).data('i') || 0);
-        renderPreview(i);
-    });
-
-    // Close viewer
-    $(document).on('click', '#poatt-stacked .poatt-close', function () {
-        const $m = $('#poatt-stacked');
-        $m.addClass('poatt-hidden').attr('aria-hidden', 'true');
-        // cleanup listeners
-        $(window).off('resize.poatt');
-        $('#poatt-canvas').off('wheel.poatt');
-    });
-
-    function setAttCount(n) {
-        const b = document.getElementById('poatt-count');
-        if (b) b.textContent = String(n);
-    }
-
     // Eye button: fetch list → open stacked viewer
     $(document).on('click', '.js-poatt-open-viewer', function () {
         const endpoint = $(this).data('endpoint');          // /po/{po}/attachments (index)
@@ -1003,74 +1231,6 @@
             const bundleUrl = (res && res.bundle_url) ? res.bundle_url : (bundle || null);
             poOpenStacked(items, bundleUrl);
         }).fail(() => alert('Could not load attachments.'));
-    });
-
-    // open/close dropdown
-    $(document).on('click', '.att-trigger', function (e) {
-        e.stopPropagation();
-        const $wrap = $(this).closest('.att-actions');
-        const $menu = $wrap.find('.att-menu');
-        const isOpen = $menu.hasClass('is-open');
-
-        // close others
-        $('.att-menu').removeClass('is-open');
-        $('.att-actions').removeClass('open');
-        $('.att-trigger').attr('aria-expanded', 'false');
-
-        // toggle this one
-        if (!isOpen) {
-            $menu.addClass('is-open');
-            $wrap.addClass('open');
-            $(this).attr('aria-expanded', 'true');
-        }
-    });
-
-    // click outside closes
-    $(document).on('click', function () {
-        $('.att-menu').removeClass('is-open');
-        $('.att-actions').removeClass('open');
-        $('.att-trigger').attr('aria-expanded', 'false');
-    });
-
-    // Manage uploads (opens your upload modal with state)
-    $(document).on('click', '.js-att-manage', function () {
-        const $t = $(this).closest('.att-actions').find('.att-trigger');
-        window.poattState = window.poattState || {};
-        poattState.indexUrl = $t.data('index-url');
-        poattState.uploadUrl = $t.data('upload-url');
-        poattState.csrf = $t.data('csrf');
-        $('.att-menu').removeClass('is-open');
-        openModal($('#poatt-upload'));
-        fetchList(poattState.indexUrl);
-    });
-
-    // View attachments (opens stacked viewer)
-    $(document).on('click', '.js-att-view', function () {
-        const $t = $(this).closest('.att-actions').find('.att-trigger');
-        const endpoint = $t.data('endpoint');
-        const bundle = $t.data('bundle-url');
-        $('.att-menu').removeClass('is-open');
-
-        $.getJSON(endpoint).done(res => {
-            const items = Array.isArray(res) ? res : (res.items || []);
-            setAttCount(items.length);
-            poOpenStacked(items, res.bundle_url || bundle || null);
-        }).fail(() => alert('Could not load attachments.'));
-    });
-
-    document.addEventListener('DOMContentLoaded', () => {
-        const btn = document.querySelector('.att-trigger');
-        const badge = document.getElementById('poatt-count');
-        if (!btn || !badge) return;
-
-        // Use server-rendered count if present (prevents “0” flash)
-        const initial = btn.getAttribute('data-initial-count');
-        if (initial !== null) badge.textContent = initial;
-
-        // Your existing upload/delete logic should call this after it mutates files:
-        window.updatePoAttCount = function (n) {
-            if (badge) badge.textContent = String(n);
-        };
     });
 
     $('.js-modernize-select').each(function () {
@@ -1168,55 +1328,6 @@
         $('.status-actions').removeClass('open');
     });
 
-    const wrap = document.querySelector('.dd-month .ddm');
-    if (wrap) {
-        const trigger = wrap.querySelector('.ddm__trigger');
-        const menu = wrap.querySelector('.ddm__menu');
-        const label = wrap.querySelector('.ddm__text');
-        const hidden = document.getElementById('monthVal');
-
-        function open() {
-            menu.classList.add('is-open');
-            wrap.setAttribute('aria-expanded', 'true');
-        }
-        function close() {
-            menu.classList.remove('is-open');
-            wrap.setAttribute('aria-expanded', 'false');
-        }
-
-        trigger.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isOpen = menu.classList.contains('is-open');
-            document.querySelectorAll('.ddm__menu.is-open').forEach(m => m.classList.remove('is-open'));
-            isOpen ? close() : open();
-        });
-
-        menu.addEventListener('click', (e) => {
-            const item = e.target.closest('.ddm__item');
-            if (!item) return;
-            const val = item.getAttribute('data-value');
-            const text = item.textContent.trim();
-
-            hidden.value = val;
-            label.textContent = text;
-
-            menu.querySelectorAll('.ddm__item').forEach(i => i.classList.remove('is-active'));
-            item.classList.add('is-active');
-
-            close();
-            document.getElementById('poMonthFilter')?.submit();
-        });
-
-        document.addEventListener('click', (e) => {
-            if (!wrap.contains(e.target)) close();
-        });
-
-        trigger.addEventListener('keydown', (e) => {
-            if (['Enter', ' '].includes(e.key)) { e.preventDefault(); open(); }
-            if (e.key === 'Escape') close();
-        });
-    }
-
     function initPoTotals() {
         // if table is present, compute both row totals and footers
         if ($('#poRowsTbl').length) {
@@ -1231,58 +1342,44 @@
     // extra safety if scripts are in <head> or assets load late
     window.addEventListener('load', initPoTotals);
 
-    // open/close
-    $(document).on('click', '.tax-trigger', function (e) {
-        e.stopPropagation();
-        const $wrap = $(this).closest('.tax-actions');
-        const $menu = $wrap.find('.tax-menu');
-
-        // close others
-        $('.tax-menu').not($menu).removeClass('is-open');
-        $('.tax-actions').not($wrap).removeClass('open');
-
-        // toggle this one
-        $menu.toggleClass('is-open');
-        $wrap.toggleClass('open');
-        $(this).attr('aria-expanded', $menu.hasClass('is-open') ? 'true' : 'false');
-    });
-
-    // choose option
-    $(document).on('click', '.tax-item', function (e) {
-        e.preventDefault();
-        const $wrap = $(this).closest('.tax-actions');
-        const val = $(this).data('val');
-        const label = $(this).text();
-
-        $wrap.find('input[name="tax_kind"]').val(val);
-        $wrap.find('#tax-kind-label').text(label);
-        $wrap.find('.tax-item').removeClass('is-active');
-        $(this).addClass('is-active');
-
-        $wrap.find('.tax-menu').removeClass('is-open');
-        $wrap.removeClass('open');
-
-        // keep totals in sync
-        recalc();
-    });
-
-    // click outside closes (reuse existing doc click if you want)
-    $(document).on('click', function () {
-        $('.tax-menu').removeClass('is-open');
-        $('.tax-actions').removeClass('open');
-    });
-
-    $(function () {
-        const v = ($('input[name="tax_kind"]').val() || '').toLowerCase();
-        $('.tax-menu .tax-item').each(function () {
-            $(this).toggleClass('is-active', $(this).data('val') === v);
-        });
-    });
-
+    // 4) Conditions & Terms preview keeps syncing
     $(document).on('input', 'textarea[name="conditions_terms"]', function () {
         var txt = $(this).val() || '';
         var $plain = $('.terms-plain');
         if ($plain.length) $plain.text(txt);
     });
+
+    // Tax kind buttons -> update hidden + label + toggle only the input
+    $(document).on('click', '.tax-kind-btn', function () {
+        var val = $(this).data('val'); // 'ppn' | 'pph' | 'none'
+        $('#tax-kind').val(val);
+
+        $('.tax-kind-btn').removeClass('is-active');
+        $(this).addClass('is-active');
+
+        setTaxLabel(val);
+
+        var $amt = $('#taxAmount');
+        if (val === 'none') {
+            $amt.prop('disabled', true).val('').addClass('is-hidden');
+        } else {
+            $amt.prop('disabled', false).removeClass('is-hidden');
+        }
+
+        recalc();
+    });
+
+    function readData($el, key) {
+        // try underscore form first (data-sup_company), then camelCase for hyphen form (data-sup-company)
+        const camel = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+
+        return (
+            $el.data(key) ??
+            $el.data(camel) ??
+            $el.attr('data-' + key) ??
+            $el.attr('data-' + key.replace(/_/g, '-')) ??
+            ''
+        );
+    }
 
 })(jQuery);
