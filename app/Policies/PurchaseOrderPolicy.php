@@ -33,12 +33,21 @@ class PurchaseOrderPolicy
 
     public function update(User $user, PurchaseOrder $po): bool
     {
+        // locked POs cannot be edited by anyone except admin (handled in before())
+        if ($po->is_closed) {
+            return false;
+        }
+
         // Only owner (or admin via before) can update
         return $po->user_id === $user->id && ($user->role ?? 'user') !== 'consultant';
     }
 
     public function delete(User $user, PurchaseOrder $po): bool
     {
+        if ($po->is_closed) {
+            return false;
+        }
+
         return $po->user_id === $user->id && ($user->role ?? 'user') !== 'consultant';
     }
 
@@ -51,5 +60,23 @@ class PurchaseOrderPolicy
     public function download(User $user, PurchaseOrder $po): bool
     {
         return $this->view($user, $po);
+    }
+
+    public function closeYear(User $user): bool
+    {
+        // Only admin can close a PO year
+        return (int)($user->is_admin ?? 0) === 1;
+    }
+
+    public function openNextYear(User $user): bool
+    {
+        // Only admin can open the next PO year
+        return (int)($user->is_admin ?? 0) === 1;
+    }
+
+    public function reopenYear(User $user): bool
+    {
+        // Only admin can reopen a closed PO year
+        return (int)($user->is_admin ?? 0) === 1;
     }
 }

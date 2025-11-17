@@ -5,6 +5,9 @@
 
 @php
 $isConsultant = auth()->user()?->role === 'consultant';
+$isClosed = (bool) $sheet->is_closed;
+$isReadOnly = $isConsultant || $isClosed;
+$lock = $isReadOnly ? 'disabled readonly class=locked-input' : '';
 @endphp
 
 <div class="sheet-wrap">
@@ -16,14 +19,30 @@ $isConsultant = auth()->user()?->role === 'consultant';
                 <h1 class="sheet-title">Expense Sheet</h1>
                 <div class="sheet-sub">
                     Period: {{ strftime('%B', mktime(0,0,0,$sheet->period_month,1)) }} {{ $sheet->period_year }}
+                    @if($sheet->is_closed)
+                    <span class="badge-closed" style="margin-left:8px;">Closed</span>
+                    @endif
                 </div>
             </div>
             <div class="sheet-head-actions">
                 <a href="{{ route('expenses.export', $sheet) }}" class="sheet-btn sheet-btn-primary">Download Excel</a>
-                <a href="{{ route('expenses.index') }}" class="sheet-btn sheet-btn-outline">All Sheets</a>
+                <a href="{{ route('expenses.index', ['year' => $sheet->period_year]) }}" class="sheet-btn sheet-btn-outline">All Sheets</a>
                 <a href="{{ route('home') }}" class="sheet-btn sheet-btn-ghost">Home</a>
             </div>
         </div>
+
+        @php
+        $role = auth()->user()->role ?? 'user';
+        @endphp
+
+        @if($sheet->is_closed && $role !== 'consultant')
+        <div class="sheet-alert info" style="display:flex;align-items:center;gap:8px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 17v-5M12 7h.01" stroke="#01305A" stroke-width="2" fill="none" stroke-linecap="round" />
+            </svg>
+            <strong>Closed:</strong> This period is closed. Reopen the year to edit.
+        </div>
+        @endif
 
         @if (session('status'))
         <div class="sheet-alert success" role="alert">{{ session('status') }}</div>
@@ -124,7 +143,7 @@ $isConsultant = auth()->user()?->role === 'consultant';
                                 </form> {{-- closes the PATCH form --}}
 
                                 {{-- Delete --}}
-                                @can('delete', $r)
+                                @can('update', $sheet)
                                 <form method="POST" action="{{ route('expenses.rows.delete', [$sheet,$r]) }}" class="inline-form js-confirm" data-confirm="Delete this row?">
                                     @csrf @method('DELETE')
                                     <button class="icon-btn icon-del" type="submit" title="Delete" aria-label="Delete">
@@ -187,7 +206,7 @@ $isConsultant = auth()->user()?->role === 'consultant';
 
                                             <a href="{{ route('attachments.download', $a) }}" class="attach-btnmini" title="Download original">Download</a>
 
-                                            @can('delete', $r)
+                                            @can('update', $sheet)
                                             <form method="POST" action="{{ route('attachments.destroy', [$sheet,$r,$a]) }}" class="inline-form js-confirm" data-confirm="Delete this attachment?">
                                                 @csrf @method('DELETE')
                                                 <button class="attach-btnmini danger" title="Delete">Delete</button>

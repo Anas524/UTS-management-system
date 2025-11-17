@@ -10,6 +10,23 @@
     })();
     window.READ_ONLY = READ_ONLY;
 
+    // ----- Auto-hide "Closed" alert on PO show (any mode) -----
+    $(function () {
+        var $alert = $('.sheet-alert.info');
+        // Debug line – you can keep it or remove it later
+        console.log('PO closed alert count:', $alert.length);
+
+        if (!$alert.length) return;
+
+        // Auto-hide after 3 seconds
+        setTimeout(function () {
+            console.log('Fading out PO closed alert…');
+            $alert.fadeOut(200, function () {
+                $(this).remove();
+            });
+        }, 3000);
+    });
+
     // --- Always-on: Attachments menu + viewer (works for all roles) ---
     initPoAttachments(); // call this BEFORE any early return
 
@@ -188,9 +205,96 @@
         });
     }
 
+    // ----------------- YEAR DROPDOWN (index page) -----------------
+    function initYearDropdown() {
+        const root   = document.getElementById('year-dd');
+        if (!root) return; // single-year mode or non-index page
+
+        const btn    = document.getElementById('yearBtn');
+        const list   = document.getElementById('yearList');
+        const hidden = document.getElementById('yearInput');
+        const label  = document.getElementById('yearLabel');
+        let options  = Array.from(list.querySelectorAll('.year-dd__option'));
+        let activeIndex = options.findIndex(o => o.classList.contains('is-selected'));
+
+        function setActive(i) {
+            options.forEach(o => o.classList.remove('is-active'));
+            if (i >= 0 && i < options.length) {
+                options[i].classList.add('is-active');
+                activeIndex = i;
+            }
+        }
+
+        function openDd() {
+            root.setAttribute('aria-open', 'true');
+            btn.setAttribute('aria-expanded', 'true');
+            list.focus();
+            setActive(activeIndex);
+            document.addEventListener('click', onDoc, { once: true });
+        }
+
+        function closeDd() {
+            root.removeAttribute('aria-open');
+            btn.setAttribute('aria-expanded', 'false');
+            btn.focus();
+        }
+
+        function onDoc(e) {
+            if (!root.contains(e.target)) closeDd();
+        }
+
+        function select(i) {
+            const opt = options[i];
+            if (!opt) return;
+            options.forEach(o => {
+                o.classList.remove('is-selected');
+                o.setAttribute('aria-selected', 'false');
+            });
+            opt.classList.add('is-selected');
+            opt.setAttribute('aria-selected', 'true');
+            hidden.value = opt.dataset.value;
+            label.textContent = opt.dataset.value;
+            // submit the parent form (GET /po?year=...)
+            root.closest('form').submit();
+        }
+
+        btn.addEventListener('click', () => {
+            if (root.getAttribute('aria-open') === 'true') closeDd();
+            else openDd();
+        });
+
+        list.addEventListener('click', (e) => {
+            const opt = e.target.closest('.year-dd__option');
+            if (!opt) return;
+            const i = options.indexOf(opt);
+            if (i > -1) select(i);
+        });
+
+        list.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                closeDd();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                select(activeIndex);
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActive(Math.min(activeIndex + 1, options.length - 1));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive(Math.max(activeIndex - 1, 0));
+            }
+        });
+    }
+
+    // init month + year dropdowns (index page)
     initMonthFilterDropdown();                    // immediate try
     $(initMonthFilterDropdown);                   // DOM-ready fallback
     window.addEventListener('load', initMonthFilterDropdown); // full-load fallback
+
+    initYearDropdown();
+    $(initYearDropdown);
+    window.addEventListener('load', initYearDropdown);
 
     if (READ_ONLY) {
         $('#poHdrForm, #poRowsTbl').find('input:not([type="hidden"]), textarea, select')
@@ -258,40 +362,82 @@
     }
 
     function recalcCurrencyRow($tr) {
-        const qty = parseFloat(String($tr.find('input[name*="[qty]"], input[name="qty"]').val() || '').replace(',', '.')) || 0;
-        const unit = parseFloat(normDec($tr.find('input[name*="[price_aed]"], input[name="price_aed"]').val())) || 0;
-        const total = qty * unit;
-        const totalInt = Math.round(total);
-        $tr.find('.amount-aed').text(fmtIDRInt(totalInt));
+        const $cell = $tr.find('.amount-aed');
+
+        // original amount from DB (set via data-amount in Blade)
+        const original = Number($cell.data('amount') || 0);
+
+        const rawQty = $tr.find('input[name*="[qty]"], input[name="qty"]').val();
+        const rawUnit = $tr.find('input[name*="[price_aed]"], input[name="price_aed"]').val();
+
+        const qty = parseFloat(String(rawQty || '').replace(',', '.'));
+        const unit = parseFloat(normDec(rawUnit));
+
+        // If both qty and unit are empty / invalid but we have an original value,
+        // keep the original amount instead of overwriting with IDR 0
+        if (
+            (!rawQty && !rawUnit) ||
+            ((!qty || !isFinite(qty)) && (!unit || !isFinite(unit)) && original)
+        ) {
+            $cell.text(fmtIDRInt(original));
+            return;
+        }
+
+        const rowTotalInt = Math.round((qty || 0) * (unit || 0));
+        $cell.text(fmtIDRInt(rowTotalInt));
     }
 
     function recalc() {
         let subtotal = 0;
 
-        // per-row totals (sum integers)
+        // Sum what is currently displayed in each .amount-aed cell
         $('#poRowsTbl tbody tr').each(function () {
-            const $tr = $(this);
-            const qty = parseFloat(String($tr.find('input[name="qty"], input[name*="[qty]"]').val() || '').replace(',', '.')) || 0;
-            const unit = parseFloat(normDec($tr.find('input[name="price_aed"], input[name*="[price_aed]"]').val())) || 0;
-
-            const rowTotalInt = Math.round(qty * unit);
-            subtotal += rowTotalInt;
-            $tr.find('.amount-aed').text(fmtIDRInt(rowTotalInt));
+            const $cell = $(this).find('.amount-aed');
+            const txt = ($cell.text() || '').replace(/[^\d]/g, ''); // keep digits only
+            const rowInt = parseInt(txt, 10) || 0;
+            subtotal += rowInt;
         });
 
-        // manual tax → integer rupiah
         const kind = getTaxKindSafe();
         setTaxLabel(kind);
-        let tax = 0;
-        if (kind !== 'none') tax = Math.round(parseFloat(normDec($('#taxAmount').val() || '0')) || 0);
 
-        // footer
+        const $taxInput = $('#taxAmount');
+        let tax = 0;
+
+        if ($taxInput.length === 0) {
+            // READ-ONLY / locked view:
+            // keep whatever server already rendered in the footer
+            const existing = $('#ftTax').text() || '';
+            const digits = existing.replace(/[^\d]/g, '');
+            tax = parseInt(digits, 10) || 0;
+        } else if (kind !== 'none') {
+            // Editable view: use the IDR value typed by the user
+            tax = Math.round(Number(normDec($taxInput.val() || '0')) || 0);
+        }
+
         const total = subtotal + tax;
+
+        // Subtotal always comes from row amounts
         $('#ftSubtotal').text(fmtIDRInt(subtotal));
-        if (!$('#ftTax').find('input').length) $('#ftTax').text(fmtIDRInt(tax));
+
+        // Update tax display:
+        if ($taxInput.length === 0) {
+            // locked: update the .readflat if present, otherwise fall back to ftTax
+            const $flat = $('#ftTax .readflat');
+            const formatted = fmtIDRInt(tax);
+            if ($flat.length) $flat.text(formatted);
+            else $('#ftTax').text(formatted);
+        } else if (!$('#ftTax').find('input').length) {
+            // editable but no input inside ftTax (safety)
+            $('#ftTax').text(fmtIDRInt(tax));
+        }
+
+        // Total always based on subtotal + tax
         $('#ftTotal').text(fmtIDRInt(total));
 
-        if (typeof updateAmountWordsIDR === 'function') updateAmountWordsIDR(total);
+        if (typeof updateAmountWordsIDR === 'function') {
+            updateAmountWordsIDR(total);
+        }
     }
 
     // Recalc when qty / price change (delegated so new rows work too)

@@ -51,20 +51,40 @@ class ExpenseSheetController extends Controller
     {
         $this->authorize('viewAny', ExpenseSheet::class);
 
+        $activeYear = (int) ($request->query('year') ?: date('Y'));
         $u = Auth::user();
 
+        // --- 1) Build the "yearOptions" dropdown (distinct years the viewer can access)
+        $base = ExpenseSheet::query();
+        if (!(int)$u->is_admin && $u->role !== 'consultant') {
+            $base->where('user_id', $u->id);
+        }
+
+        $yearOptions = $base->select('period_year')
+            ->distinct()
+            ->orderBy('period_year', 'asc')
+            ->pluck('period_year')
+            ->toArray();
+
+        // ensure the currently requested year is present (e.g., after opening next year)
+        if (!in_array($activeYear, $yearOptions, true)) {
+            $yearOptions[] = $activeYear;
+            sort($yearOptions);
+        }
+
+        // --- 2) Query rows for the active year (respecting visibility)
         $query = ExpenseSheet::query()
             ->with('user')
             ->withSum('rows as total_debit', 'debit')
-            ->withSum('rows as total_credit', 'credit');
+            ->withSum('rows as total_credit', 'credit')
+            ->where('period_year', $activeYear);
 
         // Normal users see only their own; admins & consultants see all
-        if (!$u->is_admin && $u->role !== 'consultant') {
-            // normal users only see their own
+        if (!(int)$u->is_admin && $u->role !== 'consultant') {
             $query->where('user_id', $u->id);
         }
 
-        // compute ALL visible totals (independent of pagination)
+        // --- 3) Totals across all visible sheets in the active year
         $visibleIds = (clone $query)->pluck('id');
 
         // TRUNCATE each value before summing so we don't round up
@@ -76,20 +96,33 @@ class ExpenseSheetController extends Controller
             ')
             ->first();
 
-        // Cast as int via string to avoid float conversion
-        $allDebit  = (int) (string) $global->debit;
-        $allCredit = (int) (string) $global->credit;
+        $allDebit  = (int) (string) ($global->debit  ?? 0);
+        $allCredit = (int) (string) ($global->credit ?? 0);
 
-        // sort strictly by year then month (Jan → Dec)
+        // --- 4) Table rows (Jan → Dec)
         $sheets = $query
             ->orderBy('period_year', 'asc')
             ->orderBy('period_month', 'asc')
-            ->paginate(10);
+            ->get();
+
+        // --- 5) Header button logic
+        $mine = ExpenseSheet::query()
+            ->where('user_id', $u->id)
+            ->where('period_year', $activeYear);
+
+        $hasOpen   = (clone $mine)->where('is_closed', false)->exists(); // at least one of MY sheets open
+        $hasClosed = (clone $mine)->where('is_closed', true)->exists();  // at least one of MY sheets closed
+        $multiYear = count($yearOptions) > 1;
 
         return view('expenses.index', [
-            'sheets'    => $sheets,
-            'allDebit'  => $allDebit,
-            'allCredit' => $allCredit,
+            'sheets'       => $sheets,
+            'allDebit'     => $allDebit,
+            'allCredit'    => $allCredit,
+            'activeYear'   => $activeYear,
+            'yearOptions'  => $yearOptions, // use this in the dropdown
+            'multiYear'    => $multiYear,   // hide dropdown if false
+            'hasOpen'      => $hasOpen,     // show Close if true
+            'hasClosed'    => $hasClosed,    // show Reopen when year effectively closed
         ]);
     }
 
@@ -109,7 +142,7 @@ class ExpenseSheetController extends Controller
             'beginning_balance' => null,
         ]);
 
-        return redirect()->route('expenses.show', $sheet);
+        return redirect()->route('expenses.show', [$sheet, 'year' => $sheet->period_year]);
     }
 
     public function show(Request $request, ExpenseSheet $sheet)
@@ -138,6 +171,7 @@ class ExpenseSheetController extends Controller
     public function updateBeginning(Request $request, ExpenseSheet $sheet)
     {
         $this->authorize('update', $sheet);
+        $this->guardOpen($sheet);
 
         // sanatize first
         $this->normalizeRupiah($request, ['beginning_balance']);
@@ -154,6 +188,7 @@ class ExpenseSheetController extends Controller
     public function addRow(Request $request, ExpenseSheet $sheet)
     {
         $this->authorize('update', $sheet);
+        $this->guardOpen($sheet);
 
         $data = $request->validate([
             'date'        => 'required|date',
@@ -176,6 +211,7 @@ class ExpenseSheetController extends Controller
     public function updateRow(Request $request, ExpenseSheet $sheet, ExpenseRow $row)
     {
         $this->authorize('update', $sheet);
+        $this->guardOpen($sheet);
 
         // Re-resolve so it MUST belong to this sheet
         $row = $sheet->rows()->whereKey($row->getKey())->firstOrFail();
@@ -208,6 +244,7 @@ class ExpenseSheetController extends Controller
     public function deleteRow(ExpenseSheet $sheet, ExpenseRow $row)
     {
         $this->authorize('update', $sheet);
+        $this->guardOpen($sheet);
 
         // Re-resolve so it MUST belong to this sheet
         $row = $sheet->rows()->whereKey($row->getKey())->firstOrFail();
@@ -224,5 +261,86 @@ class ExpenseSheetController extends Controller
         $filename = "Expense Sheet - {$periodLabel}.xlsx"; // e.g. "Expense Sheet - August 2025.xlsx"
 
         return Excel::download(new ExpenseSheetExport($sheet), $filename);
+    }
+
+    // POST /expenses/close-year/{year}
+    public function closeYear(int $year)
+    {
+        $this->authorize('closeYear', ExpenseSheet::class);
+
+        DB::transaction(function () use ($year) {
+            ExpenseSheet::where('user_id', Auth::id())
+                ->where('period_year', $year)
+                ->where('is_closed', false)
+                ->lockForUpdate()
+                ->get()
+                ->each->closeNow();
+        });
+
+        // Stay on that year
+        return redirect()
+            ->route('expenses.index', ['year' => $year])
+            ->with('ok', "Closed expense year {$year}");
+    }
+
+    // POST /expenses/open-next/{year}
+    public function openNextYear(int $year)
+    {
+        $this->authorize('openNextYear', ExpenseSheet::class);
+
+        $next = $year + 1;
+
+        //  Do NOT pre-create any sheets now. Just jump to the next year and
+        //  auto-open the "Add Sheet" modal so the user chooses the month.
+        return redirect()
+            ->route('expenses.index', ['year' => $next, 'new' => 1])
+            ->with('ok', "Opened expense year {$next}. Choose a month to create the first sheet.");
+    }
+
+    // POST /expenses/reopen-year/{year}
+    public function reopenYear(int $year)
+    {
+        $this->authorize('reopenYear', ExpenseSheet::class);
+
+        DB::transaction(function () use ($year) {
+            ExpenseSheet::where('user_id', Auth::id())
+                ->where('period_year', $year)
+                ->where('is_closed', true)
+                ->lockForUpdate()
+                ->get()
+                ->each->reopen();
+        });
+
+        // Stay on that year
+        return redirect()
+            ->route('expenses.index', ['year' => $year])
+            ->with('ok', "Reopened expense year {$year}");
+    }
+
+    private function guardOpen(ExpenseSheet $sheet): void
+    {
+        if ($sheet->is_closed) {
+            abort(423, 'This period is closed. Reopen the year to edit.');
+        }
+    }
+
+    private function computeEndingBalance(\App\Models\ExpenseSheet $sheet): ?int
+    {
+        // sum as integers (rupiah units), using DB to avoid float drift
+        $agg = DB::table('expense_rows')
+            ->where('expense_sheet_id', $sheet->id)
+            ->selectRaw('
+            COALESCE(SUM(TRUNCATE(debit,  0)), 0) AS debit,
+            COALESCE(SUM(TRUNCATE(credit, 0)), 0) AS credit
+        ')
+            ->first();
+
+        $totalDebit  = (int) (string) $agg->debit;
+        $totalCredit = (int) (string) $agg->credit;
+
+        $mutation = $totalDebit - $totalCredit;
+        $begin    = $sheet->beginning_balance;
+
+        return is_null($begin) ? null : ($begin + $mutation);
     }
 }

@@ -36,7 +36,8 @@ class ExpenseSheetPolicy
      */
     public function update(User $user, ExpenseSheet $expenseSheet): bool
     {
-        return $user->role !== 'consultant';
+        // no edits if the sheet (month) is closed
+        return $user->role !== 'consultant' && !$expenseSheet->is_closed;
     }
 
     /**
@@ -44,7 +45,8 @@ class ExpenseSheetPolicy
      */
     public function delete(User $user, ExpenseSheet $expenseSheet): bool
     {
-        return $user->role !== 'consultant';
+        // no deletes if the sheet is closed
+        return $user->role !== 'consultant' && !$expenseSheet->is_closed;
     }
 
     /**
@@ -52,7 +54,7 @@ class ExpenseSheetPolicy
      */
     public function restore(User $user, ExpenseSheet $expenseSheet): bool
     {
-        return $user->is_admin === 1;
+        return (int)($user->is_admin ?? 0) === 1;
     }
 
     /**
@@ -60,7 +62,7 @@ class ExpenseSheetPolicy
      */
     public function forceDelete(User $user, ExpenseSheet $expenseSheet): bool
     {
-        return $user->is_admin === 1;
+        return (int)($user->is_admin ?? 0) === 1;
     }
 
     // custom permission: consultants can still export/download
@@ -72,5 +74,21 @@ class ExpenseSheetPolicy
     public function download(User $user, ExpenseSheet $sheet): bool
     {
         return true;
+    }
+
+    // Used as: $this->authorize('closeYear', ExpenseSheet::class);
+    public function closeYear(User $user): bool
+    {
+        return (int)($user->is_admin ?? 0) === 1;
+    }
+
+    public function reopenYear(User $user): bool
+    {
+        return (int)($user->is_admin ?? 0) === 1;
+    }
+
+    public function openNextYear(User $user): bool
+    {
+        return (int)($user->is_admin ?? 0) === 1;
     }
 }

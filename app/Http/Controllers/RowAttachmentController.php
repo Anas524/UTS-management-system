@@ -15,11 +15,14 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class RowAttachmentController extends Controller
 {
-    // List (JSON) — optional if you go fully non-AJAX
-    public function index(ExpenseSheet $sheet, ExpenseRow $row)
+    // List (JSON)
+    public function index(ExpenseSheet $sheet, int $rowId)
     {
+        // fetch row scoped to this sheet
+        $row = ExpenseRow::where('expense_sheet_id', $sheet->id)
+            ->findOrFail($rowId);
+
         $this->authorize('download', $row);
-        abort_if($row->expense_sheet_id !== $sheet->id, 404);
 
         $atts = $row->attachments()->latest()->get()->map(function ($a) {
             return [
@@ -27,7 +30,7 @@ class RowAttachmentController extends Controller
                 'name' => $a->original_name,
                 'size' => $a->size,
                 'mime' => $a->mime,
-                'view' => route('attachments.preview', $a),      // was attachments.view
+                'view' => route('attachments.preview', $a),
                 'download' => route('attachments.download', $a),
             ];
         });
@@ -36,18 +39,27 @@ class RowAttachmentController extends Controller
     }
 
     // Upload (supports multiple files)
-    public function store(Request $request, ExpenseSheet $sheet, ExpenseRow $row)
+    public function store(Request $request, ExpenseSheet $sheet, int $rowId)
     {
+        // row is always forced to belong to this sheet
+        $row = ExpenseRow::where('expense_sheet_id', $sheet->id)
+            ->findOrFail($rowId);
+
         $this->authorize('update', $sheet);
-        abort_if($row->expense_sheet_id !== $sheet->id, 404);
+
+        // hard guard: forbid uploads when closed
+        if ($sheet->is_closed) {
+            abort(423, 'This period is closed. Reopen the year to edit.');
+        }
 
         $request->validate([
             'files'   => 'required',
-            'files.*' => 'file|max:20480', // 20MB per file; expand if needed
+            'files.*' => 'file|max:20480',
         ]);
 
         foreach ((array) $request->file('files', []) as $file) {
             if (!$file) continue;
+
             $dir  = "attachments/{$sheet->id}/{$row->id}";
             $path = $file->store($dir, 'public');
 
@@ -86,21 +98,41 @@ class RowAttachmentController extends Controller
     }
 
     // Delete
-    public function destroy(ExpenseSheet $sheet, ExpenseRow $row, ExpenseRowAttachment $att)
+    public function destroy(Request $request, ExpenseSheet $sheet, int $rowId, int $attId)
     {
-        $this->authorize('delete', $row);
-        abort_if($row->expense_sheet_id !== $sheet->id || $att->expense_row_id !== $row->id, 404);
+        // Make sure the row belongs to this sheet
+        $row = ExpenseRow::where('expense_sheet_id', $sheet->id)
+            ->findOrFail($rowId);
+
+        $this->authorize('update', $sheet); // permission comes from sheet
+
+        // Find the attachment for THIS row only
+        $att = ExpenseRowAttachment::where('expense_row_id', $row->id)
+            ->findOrFail($attId);
+
+        // Hard guard: no deletes when closed
+        if ($sheet->is_closed) {
+            abort(423, 'This period is closed. Reopen the year to edit.');
+        }
 
         Storage::disk($att->disk)->delete($att->path);
         $att->delete();
 
+        // If it's an AJAX/JSON request, return JSON
+        if ($request->expectsJson() || $request->ajax()) {
+            return response()->json(['ok' => true]);
+        }
+
+        // Otherwise, redirect back to the sheet (no pretty-print screen)
         return back()->with('status', 'Attachment deleted.');
     }
 
-    public function bundlePdf(ExpenseSheet $sheet, ExpenseRow $row)
+    public function bundlePdf(ExpenseSheet $sheet, int $rowId)
     {
+        $row = ExpenseRow::where('expense_sheet_id', $sheet->id)
+            ->findOrFail($rowId);
+
         $this->authorize('download', $row);
-        abort_if($row->expense_sheet_id !== $sheet->id, 404);
 
         $attachments = $row->attachments()->get();
         if ($attachments->isEmpty()) {

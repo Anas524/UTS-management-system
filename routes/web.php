@@ -6,6 +6,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\AdminController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExpenseSheetController;
+use App\Http\Controllers\PayslipController;
 use App\Http\Controllers\POAttachmentController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\RowAttachmentController;
@@ -37,11 +38,12 @@ Route::middleware(['auth', 'consultant.readonly'])->scopeBindings()->group(funct
     Route::get('/expenses/{sheet}', [ExpenseSheetController::class, 'show'])->name('expenses.show');
 
     Route::patch('/expenses/{sheet}/beginning-balance', [ExpenseSheetController::class, 'updateBeginning'])
+        ->middleware('expense.open')
         ->name('expenses.updateBeginning');
 
-    Route::post('/expenses/{sheet}/rows', [ExpenseSheetController::class, 'addRow'])->name('expenses.rows.add');
-    Route::patch('/expenses/{sheet}/rows/{row}', [ExpenseSheetController::class, 'updateRow'])->name('expenses.rows.update');
-    Route::delete('/expenses/{sheet}/rows/{row}', [ExpenseSheetController::class, 'deleteRow'])->name('expenses.rows.delete');
+    Route::post('/expenses/{sheet}/rows', [ExpenseSheetController::class, 'addRow'])->middleware('expense.open')->name('expenses.rows.add');
+    Route::patch('/expenses/{sheet}/rows/{row}', [ExpenseSheetController::class, 'updateRow'])->middleware('expense.open')->name('expenses.rows.update');
+    Route::delete('/expenses/{sheet}/rows/{row}', [ExpenseSheetController::class, 'deleteRow'])->middleware('expense.open')->name('expenses.rows.delete');
 
     Route::get('/expenses/{sheet}/export', [ExpenseSheetController::class, 'export'])
         ->name('expenses.export');
@@ -54,10 +56,12 @@ Route::middleware(['auth', 'consultant.readonly'])->scopeBindings()->group(funct
 
     // upload
     Route::post('/expenses/{sheet}/rows/{row}/attachments', [RowAttachmentController::class, 'store'])
+        ->middleware('expense.open')
         ->name('attachments.store');
 
     // delete
-    Route::delete('/expenses/{sheet}/rows/{row}/attachments/{att}', [RowAttachmentController::class, 'destroy'])
+    Route::match(['DELETE', 'POST'], '/expenses/{sheet}/rows/{row}/attachments/{att}', [RowAttachmentController::class, 'destroy'])
+        ->middleware('expense.open')
         ->name('attachments.destroy');
 
     // view/download (not nested, easy links)
@@ -71,6 +75,16 @@ Route::middleware(['auth', 'consultant.readonly'])->scopeBindings()->group(funct
     // inline-preview that always returns a PDF page
     Route::get('/attachments/{att}/preview', [RowAttachmentController::class, 'preview'])
         ->name('attachments.preview');
+
+    // Year close/open
+    Route::post('/expenses/close-year/{year}', [ExpenseSheetController::class, 'closeYear'])
+        ->name('expenses.year.close');
+
+    Route::post('/expenses/open-next/{year}', [ExpenseSheetController::class, 'openNextYear'])
+        ->name('expenses.year.openNext');
+
+    Route::post('/expenses/reopen-year/{year}', [ExpenseSheetController::class, 'reopenYear'])
+        ->name('expenses.year.reopen');
 
 
     // PO listing + create/show + rows + import
@@ -103,4 +117,18 @@ Route::middleware(['auth', 'consultant.readonly'])->scopeBindings()->group(funct
     Route::get('/po/attachments/{att}/download', [PoAttachmentController::class, 'download'])->name('po.attachments.download');
     Route::get('/po/attachments/{att}/view', [PoAttachmentController::class, 'view'])->name('po.attachments.view');
     Route::get('/po/{po}/attachments/bundle', [PoAttachmentController::class, 'bundle'])->name('po.attachments.bundle');
+
+    Route::post('/po/close-year/{year}', [PurchaseOrderController::class, 'closeYear'])
+        ->name('po.year.close');
+
+    Route::post('/po/open-next/{year}', [PurchaseOrderController::class, 'openNextYear'])
+        ->name('po.year.openNext');
+
+    Route::post('/po/reopen-year/{year}', [PurchaseOrderController::class, 'reopenYear'])
+        ->name('po.year.reopen');
+
+    Route::resource('payslips', PayslipController::class)->only(['index', 'store', 'show']);
+
+    Route::get('/payslips/{payslip}/pdf', [PayslipController::class, 'exportPdf'])
+        ->name('payslips.pdf');
 });

@@ -9,6 +9,13 @@ body {
     background-color: #fffef9;
 }
 
+button,
+input,
+select,
+textarea {
+    font-family: inherit;
+}
+
 .tabular-nums,
 .right {
     font-variant-numeric: tabular-nums;
@@ -679,6 +686,10 @@ footer {
     color: var(--uts-blue);
 }
 
+.dash-box-full {
+    grid-column: 1 / -1;   /* span both columns on desktop */
+}
+
 .dash-dl {
     display: grid;
     grid-template-columns: 120px 1fr;
@@ -1180,6 +1191,7 @@ footer {
 .sheet-head-note {
   flex: 0 0 100%;      /* force a new row under the buttons */
   margin-top: .5rem;
+  margin-bottom: .5rem;
   font-size: .9rem;
   color: #9ca3af;      /* muted */
 }
@@ -2206,6 +2218,7 @@ footer {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 12px;
+    margin-top: 5px;
 }
 
 /* Allow each grid cell to shrink */
@@ -3667,4 +3680,113 @@ footer {
 /* Optional: lighter placeholder */
 #ftTax .money-input::placeholder {
     opacity: .6;
+}
+
+.year-dd { position: relative; display: inline-block; }
+.year-dd__button{
+  position: relative; 
+  display:flex;align-items:center;gap:8px;min-width:110px;
+  padding:10px 36px 10px 12px;border:1px solid #dfe7ef;border-radius:10px;
+  background:linear-gradient(180deg,#fff 0%,#f9fbff 100%);
+  font:600 14px/1.2 "Poppins",system-ui; color:#0f172a;
+  box-shadow:0 8px 20px rgba(2,32,71,.06); cursor:pointer;
+}
+.year-dd__button svg{
+  position:absolute;
+  right:12px; top:50%; transform:translateY(-50%);
+  transition: transform .15s ease;
+  pointer-events:none;                /* click passes through to button */
+}
+
+.year-dd__button:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(1,48,90,.15);}
+.year-dd[aria-open="true"] .year-dd__button{border-color:#01305A;}
+/* rotate chevron when open */
+.year-dd[aria-open="true"] .year-dd__button svg{
+  transform:translateY(-50%) rotate(180deg);
+}
+
+.year-dd__list{
+  position:absolute; top:calc(100% + 6px); right:0; z-index:30;
+  min-width:140px; max-height:260px; overflow:auto; padding:6px;
+  background:#fff; border:1px solid #e5ecf4; border-radius:12px;
+  box-shadow:0 18px 40px rgba(2,32,71,.15); display:none;
+}
+.year-dd[aria-open="true"] .year-dd__list{ display:block; }
+
+.year-dd__option{
+  padding:10px 12px; border-radius:8px; font-weight:600; color:#0f172a;
+  transition:background .12s ease, color .12s ease;
+}
+.year-dd__option:hover{ background:#f3f7fd; }
+.year-dd__option.is-active{ background:#e9f1fb; }
+.year-dd__option.is-selected{ background:#01305A; color:#fff; }
+
+/* smooth scrollbar (optional) */
+.year-dd__list::-webkit-scrollbar{ width:8px; }
+.year-dd__list::-webkit-scrollbar-thumb{ background:#cdd7e4; border-radius:8px; }
+
+.badge-closed{
+  display:inline-block; margin-right:8px; padding:4px 8px;
+  font-weight:700; font-size:12px; color:#5b6470; background:#f1f5f9;
+  border:1px solid #e5ecf4; border-radius:999px;
+}
+.table-link.muted{ color:#9aa4b2; pointer-events:auto; }
+.locked-input { opacity:.75; pointer-events:none; }
+
+.table-btn-light {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid #d4dde9;   /* light border */
+    background: #f1f5f9;         /* light background */
+    color: #0f172a;              /* dark text */
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.table-btn-light:hover {
+    background: #e2e8f0;
+}
+
+
+/* Payslip modal: left-side, full-height panel */
+.pay-modal {
+    position: fixed;
+    inset: 0;
+    display: none;
+    z-index: 50;
+    align-items: stretch;
+    justify-content: flex-start;
+}
+
+.pay-modal.pay-modal--open {
+    display: flex;
+}
+
+.pay-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+}
+
+/* lock scroll when open */
+.body-pay-modal-open {
+    overflow: hidden;
+}
+
+.font-plus {
+    font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto;
+}
+
+.pay-page a {
+    text-decoration: none;
+}
+
+.pay-page a:hover,
+.pay-page a:focus {
+    text-decoration: none;
 }

@@ -22,24 +22,63 @@ class PurchaseOrderController extends Controller
         $this->authorize('viewAny', PurchaseOrder::class);
 
         $u = Auth::user();
-        $m = (int) $r->query('m', 0);   // 0 = all months, 1..12 = specific month
+        $m = (int) $r->query('m', 0);            // 0 = all months, 1..12 = specific month
+        $activeYear = (int) ($r->query('year') ?: date('Y'));
 
-        $q = PurchaseOrder::query()
-            ->with(['rows' => function ($q) {
-                // include amount so we can sum exact integers like Expense rows
-                $q->select('id', 'po_sheet_id', 'qty', 'price_aed', 'amount');
-            }]);
+        // --- Base visibility (no year / month filter yet) ---
+        $base = PurchaseOrder::query();
 
         // Normal users: only their POs. Admins & consultants: see all.
         if (!$u->is_admin && ($u->role ?? null) !== 'consultant') {
-            $q->where('user_id', $u->id);
+            $base->where('user_id', $u->id);
         }
 
+        // --- Year dropdown: distinct years from po_date ---
+        $yearOptions = (clone $base)
+            ->whereNotNull('po_date')
+            ->selectRaw('DISTINCT YEAR(po_date) AS yr')
+            ->orderBy('yr', 'asc')
+            ->pluck('yr')
+            ->toArray();
+
+        // Ensure active year is always present (e.g. after jumping to a new year)
+        if (!in_array($activeYear, $yearOptions, true)) {
+            $yearOptions[] = $activeYear;
+        }
+        sort($yearOptions);
+        $multiYear = count($yearOptions) > 1;
+
+        // --- Main filtered query for the active year + month ---
+        $query = clone $base;
+
+        if ($activeYear > 0) {
+            $query->whereYear('po_date', $activeYear);
+        }
         if ($m >= 1 && $m <= 12) {
-            $q->whereMonth('po_date', $m);
+            $query->whereMonth('po_date', $m);
         }
 
-        $list = $q->orderByRaw('po_date IS NULL')
+        // --- Header button logic (per-year lock), same idea as Expense sheet ---
+        // "Open" year = at least one PO where is_closed is 0 or NULL
+        $hasOpen = (clone $query)
+            ->where(function ($q) {
+                $q->whereNull('is_closed')
+                    ->orWhere('is_closed', 0);
+            })
+            ->exists();
+
+        // "Closed" year = at least one PO where is_closed is 1
+        $hasClosed = (clone $query)
+            ->where('is_closed', 1)
+            ->exists();
+
+        // --- List with rows (for row-level totals) ---
+        $list = (clone $query)
+            ->with(['rows' => function ($q) {
+                // include amount so we can sum exact integers like Expense rows
+                $q->select('id', 'po_sheet_id', 'qty', 'price_aed', 'amount');
+            }])
+            ->orderByRaw('po_date IS NULL')   // nulls last
             ->orderBy('po_date', 'asc')
             ->orderBy('id', 'asc')
             ->paginate(15)
@@ -78,20 +117,34 @@ class PurchaseOrderController extends Controller
         $months = [
             0  => 'All months',
             1  => 'January',
-            2 => 'February',
-            3 => 'March',
-            4 => 'April',
+            2  => 'February',
+            3  => 'March',
+            4  => 'April',
             5  => 'May',
-            6 => 'June',
-            7 => 'July',
-            8 => 'August',
+            6  => 'June',
+            7  => 'July',
+            8  => 'August',
             9  => 'September',
             10 => 'October',
             11 => 'November',
             12 => 'December',
         ];
 
-        return view('po.index', compact('list', 'subtotalFils', 'taxFils', 'totalFils', 'months', 'm'));
+        return view('po.index', [
+            'list'         => $list,
+            'subtotalFils' => $subtotalFils,
+            'taxFils'      => $taxFils,
+            'totalFils'    => $totalFils,
+            'months'       => $months,
+            'm'            => $m,
+
+            // year toolbar
+            'years'        => $yearOptions,
+            'activeYear'   => $activeYear,
+            'multiYear'    => $multiYear,
+            'hasOpen'      => $hasOpen,
+            'hasClosed'    => $hasClosed,
+        ]);
     }
 
     public function create()
@@ -766,6 +819,61 @@ class PurchaseOrderController extends Controller
                 'price_aed' => (string) ($r->price_aed ?? '0'),
             ])->values(),
         ]);
+    }
+
+    // POST /po/close-year/{year}
+    public function closeYear(int $year)
+    {
+        $this->authorize('closeYear', PurchaseOrder::class);
+
+        DB::transaction(function () use ($year) {
+            PurchaseOrder::year($year)
+                ->where('user_id', Auth::id())
+                ->open()              // scopeOpen() => is_closed = 0 or NULL
+                ->lockForUpdate()
+                ->update([
+                    'is_closed' => true,
+                    'closed_at' => now(),
+                ]);
+        });
+
+        return redirect()
+            ->route('po.index', ['year' => $year])
+            ->with('status', "Closed PO year {$year}");
+    }
+
+    // POST /po/open-next/{year}
+    public function openNextYear(int $year)
+    {
+        $this->authorize('openNextYear', PurchaseOrder::class);
+
+        $next = $year + 1;
+
+        // Just jump to next year; user can create POs there
+        return redirect()
+            ->route('po.index', ['year' => $next])
+            ->with('status', "Opened PO year {$next}. You can create POs for this year.");
+    }
+
+    // POST /po/reopen-year/{year}
+    public function reopenYear(int $year)
+    {
+        $this->authorize('reopenYear', PurchaseOrder::class);
+
+        DB::transaction(function () use ($year) {
+            PurchaseOrder::year($year)
+                ->where('user_id', Auth::id())
+                ->closed()            // scopeClosed() => is_closed = 1
+                ->lockForUpdate()
+                ->update([
+                    'is_closed' => false,
+                    'closed_at' => null,
+                ]);
+        });
+
+        return redirect()
+            ->route('po.index', ['year' => $year])
+            ->with('status', "Reopened PO year {$year}");
     }
 
     private function normalizeTax(Request $r, ?PurchaseOrder $po = null): void

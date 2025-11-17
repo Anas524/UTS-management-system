@@ -1,50 +1,66 @@
 @extends('layouts.app')
 @section('title', 'Purchase Order #'.$po->po_number)
 
-@php $isConsultant = auth()->user()?->role === 'consultant'; @endphp
-
 @php
+$isConsultant = auth()->user()?->role === 'consultant';
+$isClosedYear = (bool) $po->is_closed;
+
 $canUpdate = auth()->user()?->can('update', $po);
 
-$fmtIDR = fn(int $n) => 'IDR '.number_format($n, 0, ',', '.');
-$toNum = fn($v) => (float) preg_replace('/[^\d.]/', '', (string) $v);
+// helper: format IDR integer
+$fmtIDR = fn($n) => 'IDR ' . number_format((int) round($n), 0, ',', '.');
 
+// All rows
 $rows = $po->rows ?? collect();
 
-// Subtotal (saved rows)
-$subtotalIDR = $rows->sum(function ($r) use ($toNum) {
-    $unit = $toNum($r->price_aed ?? 0);
-    $qty  = $toNum($r->qty ?? 0);
-    return (int) round($unit * $qty);
-});
+// Line total: use the stored "amount" column directly
+$lineAmount = function ($r) {
+return (int) round((float) ($r->amount ?? 0));
+};
+
+// Subtotal = sum of "amount"
+$subtotalIDR = $rows->sum(fn ($r) => $lineAmount($r));
 
 // ---- IMPORTANT: use SAVED values for calculations ----
 $kindSaved = strtolower($po->tax_kind ?? 'ppn');
-$manualSaved = (int) round((float) ($po->ppn_rate ?? 0));
 
-$taxIDR = ($kindSaved === 'none') ? 0 : ($manualSaved > 0 ? $manualSaved : 0);
+/**
+* Some POs still have the real tax in tax_value_idr,
+* newer ones use ppn_rate as the absolute IDR amount.
+* Prefer tax_value_idr when it exists, otherwise ppn_rate.
+*/
+$rawTax = $po->tax_value_idr ?? $po->ppn_rate ?? 0;
+
+$manualSaved = (int) round((float) $rawTax);
+$taxIDR = ($kindSaved === 'none') ? 0 : max(0, $manualSaved);
 $totalIDR = (int) $subtotalIDR + (int) $taxIDR;
 
-// For UI controls, you can still show the last typed value:
+// For UI controls we keep last-typed values
 $kindUi = strtolower(old('tax_kind', $po->tax_kind ?? 'ppn'));
-$rateUi = old('ppn_rate', $po->ppn_rate ?? 0);
+$rateUi = old('ppn_rate', $rawTax); // use same rawTax for the input
 
-$taxKindText = $kindSaved==='pph'
+$taxKindText = $kindSaved === 'pph'
 ? 'PAJAK PENGHASILAN (PPH)'
-: ($kindSaved==='none' ? 'NO TAX' : 'PAJAK PERTAMBAHAN NILAI (PPN)');
+: ($kindSaved === 'none' ? 'NO TAX' : 'PAJAK PERTAMBAHAN NILAI (PPN)');
 
-$trim4 = function($n) {
-$f = number_format((float)$n, 4, '.', ''); // up to 4 dp
-return rtrim(rtrim($f, '0'), '.'); // trim trailing zeros and dot
+$trim4 = function ($n) {
+$f = number_format((float) $n, 4, '.', '');
+return rtrim(rtrim($f, '0'), '.');
 };
 
 /** "34,111.765" / trims trailing .00xx nicely */
-$fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
+$fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string) $n, prefix: 'IDR ');
+
+// readonly flags
+$ro = $isConsultant || $isClosedYear; // also readonly when year closed
+$roAttr = $ro ? 'disabled readonly' : '';
+$roClass = $ro ? ' locked-input' : '';
+$canEdit = !$ro && auth()->user()?->can('update', $po);
 @endphp
 
 @section('content')
 
-<div class="sheet-wrap" data-readonly="{{ $isConsultant ? 'true' : 'false' }}">
+<div class="sheet-wrap" data-readonly="{{ ($isConsultant || $isClosedYear) ? 'true' : 'false' }}">
     <div class="sheet-card">
         <div class="sheet-head">
             <div>
@@ -78,29 +94,45 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                     </button>
 
                     <div class="att-menu" role="menu" aria-label="Attachments menu">
-                        @can('update', $po)
+                        @if($canEdit)
                         <button class="att-item js-att-manage" role="menuitem">Manage uploads</button>
-                        @endcan
+                        @endif
                         <button class="att-item js-att-view" role="menuitem">View attachments</button>
                     </div>
                 </div>
 
-                @can('update', $po)
-                <button type="submit" form="poHdrForm" class="sheet-btn sheet-btn-primary">Save PO</button>
-                @endcan
+                @if($canEdit)
+                <button type="submit" form="poHdrForm" class="sheet-btn sheet-btn-primary">
+                    Save PO
+                </button>
+                @endif
             </div>
 
             @if($isConsultant)
             <div class="sheet-head-note">Read-only mode: you can view and download.</div>
             @endif
-        </div>
 
-        @php
-        $ro = $isConsultant; // boolean
-        $roAttr = $ro ? 'disabled readonly' : ''; // attributes only
-        $roClass = $ro ? ' locked-input' : ''; // leading space
-        $canEdit = auth()->user()?->can('update', $po) && !$ro;
-        @endphp
+            @php
+            $role = auth()->user()->role ?? 'user';
+            @endphp
+
+            @if($isClosedYear && $role !== 'consultant')
+            <div class="sheet-alert info" style="display:flex;align-items:center;gap:8px;">
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 17v-5M12 7h.01"
+                        stroke="#01305A"
+                        stroke-width="2"
+                        fill="none"
+                        stroke-linecap="round" />
+                </svg>
+                <div>
+                    <strong>Closed:</strong>
+                    Year {{ optional($po->po_date)->format('Y') ?? '—' }} is closed for Purchase Orders.
+                    Reopen the year to edit this PO.
+                </div>
+            </div>
+            @endif
+        </div>
 
         {{-- Header form (same view for read and edit) --}}
         <form method="POST" action="{{ route('po.update',$po) }}" id="poHdrForm" data-update-url="{{ route('po.update',$po) }}" data-csrf="{{ csrf_token() }}">
@@ -233,44 +265,52 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                     </tr>
                 </thead>
                 <tbody>
+                    {{-- TEMP DEBUG: remove after checking --}}
+                    @foreach($rows as $r)
+                    <!-- ROW {{ $r->id }}
+                            qty={{ var_export($r->qty, true) }}
+                            price={{ var_export($r->price_aed, true) }}
+                            amount_col={{ var_export($r->amount, true) }}
+                            lineAmount={{ $lineAmount($r) }} -->
+                    @endforeach
                     @forelse($rows->values() as $i => $r)
                     <tr data-row-id="{{ $r->id }}">
                         <td class="center">{{ $i + 1 }}</td>
 
                         <td>
-                            @can('update', $po)
+                            @if($canEdit)
                             <input name="sku" class="po-input" form="row-{{ $r->id }}" value="{{ $r->sku }}">
                             @else
                             <div class="readflat">{{ $r->sku }}</div>
-                            @endcan
+                            @endif
                         </td>
 
                         <td>
-                            @can('update', $po)
+                            @if($canEdit)
                             <input name="brand" class="po-input" form="row-{{ $r->id }}" value="{{ $r->brand }}">
                             @else
                             <div class="readflat">{{ $r->brand }}</div>
-                            @endcan
+                            @endif
                         </td>
 
                         <td class="col-desc">
-                            @can('update', $po)
+                            @if($canEdit)
                             <textarea name="description" rows="1" class="po-input" form="row-{{ $r->id }}">{{ $r->description }}</textarea>
                             @else
                             <div class="readflat">{{ $r->description }}</div>
-                            @endcan
+                            @endif
                         </td>
 
                         <td class="right">
-                            @can('update', $po)
+                            @if($canEdit)
                             <input name="qty" class="po-input" form="row-{{ $r->id }}" value="{{ $trim4($r->qty) }}">
                             @else
                             <div class="readflat">{{ $trim4($r->qty) }}</div>
-                            @endcan
+                            @endif
                         </td>
 
                         <td class="right">
-                            @can('update', $po)
+                            @if($canEdit)
                             <input
                                 name="price_aed"
                                 class="po-input{{ $canEdit ? ' js-aed' : '' }}{{ $roClass }}"
@@ -279,23 +319,18 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                                 value="{{ $trim4($r->price_aed) }}">
                             @else
                             <div class="readflat">{{ $trim4($r->price_aed) }}</div>
-                            @endcan
+                            @endif
                         </td>
 
                         @php
-                            $unit = $toNum($r->price_aed ?? 0);
-                            $qty  = $toNum($r->qty ?? 0);
-                            $amt  = (int) round($unit * $qty);
-                            if (!$amt && isset($r->amount)) {
-                                $amt = (int) round($toNum($r->amount)); // in case policy/accessor masks price but not amount
-                            }
+                        $amt = $lineAmount($r);
                         @endphp
-                        <td class="right amount-aed">{{ $fmtIDR($amt) }}</td>
+                        <td class="right amount-aed" data-amount="{{ $amt }}">{{ $fmtIDR($amt) }}</td>
 
                         <td class="right">
                             <div class="icon-actions">
+                                @if($canEdit)
                                 {{-- PATCH (Save) --}}
-                                @can('update', $po)
                                 <form id="row-{{ $r->id }}" method="POST"
                                     action="{{ route('po.rows.update', [$po, $r]) }}"
                                     class="row-form">
@@ -308,10 +343,8 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                                         <span class="sr-only">Save</span>
                                     </button>
                                 </form>
-                                @endcan
 
                                 {{-- DELETE (Row) --}}
-                                @can('delete', $po)
                                 <form method="POST"
                                     action="{{ route('po.rows.delete', [$po, $r]) }}"
                                     class="inline-form js-confirm"
@@ -328,7 +361,7 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                                         <span class="sr-only">Delete</span>
                                     </button>
                                 </form>
-                                @endcan
+                                @endif
                             </div> {{-- .icon-actions --}}
                         </td>
                     </tr>
@@ -340,6 +373,25 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                 </tbody>
 
                 <tfoot>
+                    {{-- ===== TAX DEBUG (TEMPORARY) ===== --}}
+                    <tr>
+                        <td colspan="8" style="font-size:11px; color:#b91c1c;">
+                            <!-- TAX DEBUG
+                            po->id            = {{ $po->id }}
+                            po->tax_kind      = {{ var_export($po->tax_kind, true) }}
+                            po->ppn_rate      = {{ var_export($po->ppn_rate, true) }}
+                            po->tax_value_idr = {{ isset($po->tax_value_idr) ? var_export($po->tax_value_idr, true) : 'NULL' }}
+
+                            kindSaved   = {{ isset($kindSaved) ? var_export($kindSaved, true) : 'NOT SET' }}
+                            rawTax      = {{ isset($rawTax) ? var_export($rawTax, true) : 'NOT SET' }}
+                            manualSaved = {{ isset($manualSaved) ? var_export($manualSaved, true) : 'NOT SET' }}
+                            subtotalIDR = {{ isset($subtotalIDR) ? var_export($subtotalIDR, true) : 'NOT SET' }}
+                            taxIDR      = {{ isset($taxIDR) ? var_export($taxIDR, true) : 'NOT SET' }}
+                            totalIDR    = {{ isset($totalIDR) ? var_export($totalIDR, true) : 'NOT SET' }}
+                            -->
+                        </td>
+                    </tr>
+
                     <tr>
                         <th colspan="6" class="right">Subtotal</th>
                         <th class="right" id="ftSubtotal">{{ $fmtIDR($subtotalIDR) }}</th>
@@ -348,7 +400,7 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
 
                     <tr id="taxRow">
                         <th colspan="6" class="right" id="ftTaxLabel">
-                            @can('update', $po)
+                            @if($canEdit)
                             <div class="tax-inline">
                                 <input type="hidden" name="tax_kind" id="tax-kind" value="{{ $kindUi }}">
                                 <div class="tax-kind-group" role="group" aria-label="Tax kind">
@@ -361,11 +413,11 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                             </div>
                             @else
                             <span>{{ $taxKindText }}</span>
-                            @endcan
+                            @endif
                         </th>
 
                         <th class="right" id="ftTax">
-                            @can('update', $po)
+                            @if($canEdit)
                             <input
                                 id="taxAmount"
                                 name="ppn_rate"
@@ -378,7 +430,7 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                                 {{ $kindUi==='none' ? 'disabled' : '' }}>
                             @else
                             <div class="readflat">{{ $fmtIDR($taxIDR) }}</div>
-                            @endcan
+                            @endif
                         </th>
                         <th></th>
                     </tr>
@@ -392,7 +444,7 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
             </table>
         </div>
         <div class="sheet-toolbar">
-            @can('update', $po)
+            @if($canEdit)
             <button
                 id="jsAddRow"
                 type="button"
@@ -401,7 +453,7 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                 data-update-url-template="{{ route('po.rows.update', [$po, '__ROW__']) }}"
                 data-delete-url-template="{{ route('po.rows.delete', [$po, '__ROW__']) }}"
                 data-csrf="{{ csrf_token() }}">+ Add row</button>
-            @endcan
+            @endif
         </div>
         @php
         $totalInt = (int) $totalIDR;
@@ -436,8 +488,12 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
         </div>
         @endif
 
+        @php
+        $canDeletePo = !$isClosedYear && auth()->user()?->can('delete', $po);
+        @endphp
+
         <div class="sheet-toolbar" style="justify-content: flex-end;">
-            @can('delete', $po)
+            @if($canDeletePo)
             <form id="deletePoForm" action="{{ route('po.destroy', $po) }}" method="POST">
                 @csrf @method('DELETE')
                 <button type="button" id="btnDeletePo"
@@ -446,12 +502,12 @@ $fmtMoney = fn ($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
                     Delete PO
                 </button>
             </form>
-            @endcan
+            @endif
         </div>
     </div>
 
     {{-- Upload / manage modal --}}
-    <div id="poatt-upload" class="poatt-modal poatt-hidden" aria-hidden="true" data-can-update="{{ $canUpdate ? '1' : '0' }}">
+    <div id="poatt-upload" class="poatt-modal poatt-hidden" aria-hidden="true" data-can-update="{{ $canEdit ? '1' : '0' }}">
         <div class=" poatt-panel" role="dialog" aria-modal="true" aria-labelledby="poatt-upload-title">
             <div class="poatt-head">
                 <h3 id="poatt-upload-title">Attachments</h3>

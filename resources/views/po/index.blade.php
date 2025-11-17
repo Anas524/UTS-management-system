@@ -1,7 +1,7 @@
 @extends('layouts.app')
 @section('title','Purchase Orders')
 
-@php $isConsultant = auth()->user()?->role === 'consultant';  use App\Support\Num; @endphp
+@php $isConsultant = auth()->user()?->role === 'consultant'; use App\Support\Num; @endphp
 
 @section('content')
 <div class="sheet-wrap">
@@ -14,6 +14,7 @@
       </div>
       <div class="sheet-head-actions">
         <form id="poMonthFilter" method="GET" action="{{ route('po.index') }}" class="dd-month">
+          <input type="hidden" name="year" value="{{ (int)$activeYear }}">
           <input type="hidden" name="m" id="monthVal" value="{{ (int)$m }}">
           <div class="ddm" data-current="{{ (int)$m }}">
             <button type="button"
@@ -43,12 +44,93 @@
         <a href="{{ route('dashboard') }}" class="sheet-btn sheet-btn-ghost">← Back</a>
 
         @can('create', App\Models\PurchaseOrder::class)
-          <a href="{{ route('po.create') }}" class="sheet-btn sheet-btn-outline">+ Create New PO</a>
+        <a href="{{ route('po.create') }}" class="sheet-btn sheet-btn-outline">+ Create New PO</a>
         @endcan
       </div>
-      
+
       @if($isConsultant)
-        <span class="sheet-head-note">Read-only mode: you can open POs and download files.</span>
+      <span class="sheet-head-note">Read-only mode: you can open POs and download files.</span>
+      @endif
+    </div>
+
+    {{-- Year toolbar (same pattern as Expenses) --}}
+    <div class="year-toolbar"
+      style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:12px 0;">
+
+      {{-- Year selector: dropdown only if more than one year --}}
+      @if($multiYear)
+      <form method="GET" action="{{ route('po.index') }}">
+        <div class="year-dd" id="year-dd">
+          <input type="hidden" name="year" id="yearInput" value="{{ $activeYear }}">
+          {{-- preserve current month filter --}}
+          <input type="hidden" name="m" value="{{ (int)$m }}">
+
+          <button type="button"
+            class="year-dd__button"
+            id="yearBtn"
+            aria-haspopup="listbox"
+            aria-expanded="false">
+            <span id="yearLabel">{{ $activeYear }}</span>
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
+              <polyline points="6 9 12 15 18 9"
+                stroke="currentColor"
+                stroke-width="2"
+                fill="none"
+                stroke-linecap="round"
+                stroke-linejoin="round" />
+            </svg>
+          </button>
+
+          <ul class="year-dd__list" id="yearList" role="listbox" tabindex="-1">
+            @foreach($years as $y)
+            <li role="option"
+              class="year-dd__option {{ (int)$y === (int)$activeYear ? 'is-selected' : '' }}"
+              aria-selected="{{ (int)$y === (int)$activeYear ? 'true' : 'false' }}"
+              data-value="{{ $y }}">{{ $y }}</li>
+            @endforeach
+          </ul>
+        </div>
+      </form>
+      @else
+      {{-- Single year: show a small pill instead of a dropdown --}}
+      <div class="year-pill"
+        style="padding:6px 10px;border:1px solid #dfe7ef;border-radius:10px;background:#fff;font-weight:600;">
+        {{ $activeYear }}
+      </div>
+      @endif
+
+      {{-- Close / OpenNext / Reopen buttons (mutually aware) --}}
+      @if(!$isConsultant)
+        @if($hasOpen)
+        <form method="POST"
+          action="{{ route('po.year.close', $activeYear) }}"
+          onsubmit="return confirm('Close PO year {{ $activeYear }}? All open/awaiting POs will be set to Closed.');">
+          @csrf
+          <button type="submit" class="sheet-btn sheet-btn-outline">
+            Close {{ $activeYear }}
+          </button>
+        </form>
+        @endif
+
+        <form method="POST"
+          action="{{ route('po.year.openNext', $activeYear) }}"
+          onsubmit="return confirm('Switch to {{ $activeYear + 1 }} to create POs for that year?');">
+          @csrf
+          <button type="submit" class="sheet-btn sheet-btn-primary">
+            Open {{ $activeYear + 1 }}
+          </button>
+        </form>
+
+        @if($hasClosed && !$hasOpen)
+        <form method="POST"
+          action="{{ route('po.year.reopen', $activeYear) }}"
+          onsubmit="return confirm('Reopen PO year {{ $activeYear }} (set Closed POs back to Open)?');">
+          @csrf
+          <button type="submit" class="sheet-btn">
+            Reopen {{ $activeYear }}
+          </button>
+        </form>
+        @endif
       @endif
     </div>
 
@@ -92,43 +174,52 @@
             <th class="right">Tax</th>
             <th class="right">Total</th>
             <th>Status</th>
-            <th class="right">Actions</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           @php
-            // Helpers
-            $fmt0  = fn($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
+          // Helpers
+          $fmt0 = fn($n) => \App\Support\Num::fmtMoney((string)$n, prefix: 'IDR ');
           @endphp
 
           @forelse($list as $po)
           @php
-            // 1) Subtotal — ALWAYS recompute from price * qty (rounded integer rupiah)
-            $rowSubtotalInt = (int) (($po->rows ?? collect())->sum(function ($r) {
-                $unit = (float)($r->price_aed ?? 0);
-                $qty  = (float)($r->qty ?? 0);
-                return (int) round($unit * $qty, 0);
-            }));
+          // 1) Subtotal — ALWAYS recompute from price * qty (rounded integer rupiah)
+          $rowSubtotalInt = (int) (($po->rows ?? collect())->sum(function ($r) {
+          $unit = (float)($r->price_aed ?? 0);
+          $qty = (float)($r->qty ?? 0);
+          return (int) round($unit * $qty, 0);
+          }));
 
-            // 2) Tax — absolute IDR stored in ppn_rate
-            $kind   = strtolower($po->tax_kind ?? 'ppn');
-            $taxInt = ($kind === 'none') ? 0 : (int) round((float)($po->ppn_rate ?? 0));
+          // 2) Tax — absolute IDR stored in ppn_rate
+          $kind = strtolower($po->tax_kind ?? 'ppn');
+          $taxInt = ($kind === 'none') ? 0 : (int) round((float)($po->ppn_rate ?? 0));
 
-            // 3) Total — PPH subtracts, others add
-            $rowTotalInt = ($kind === 'pph')
-                ? max(0, $rowSubtotalInt - $taxInt)
-                : $rowSubtotalInt + $taxInt;
+          // 3) Total — PPH subtracts, others add
+          $rowTotalInt = ($kind === 'pph')
+          ? max(0, $rowSubtotalInt - $taxInt)
+          : $rowSubtotalInt + $taxInt;
 
-            // Meta
-            $status     = $po->status ?? 'open';
-            $badgeClass = match($status){
-                'closed' => 'badge badge-green',
-                'awaiting_response' => 'badge badge-amber',
-                'transferred' => 'badge badge-indigo',
-                default => 'badge badge-slate',
-            };
-            $statusText = $po->status_label;
-            $dateStr    = $po->po_date ? \Illuminate\Support\Carbon::parse($po->po_date)->format('d-m-y') : '—';
+          // Meta
+          $status = $po->status ?? 'open';
+          $badgeClass = match($status){
+          'closed' => 'badge badge-green',
+          'awaiting_response' => 'badge badge-amber',
+          'transferred' => 'badge badge-indigo',
+          default => 'badge badge-slate',
+          };
+          $statusText = $po->status_label;
+
+          // Lock flag (year/PO lock)
+          $isClosedRow = (bool) $po->is_closed;
+          $closedAt = $po->closed_at
+          ? \Illuminate\Support\Carbon::parse($po->closed_at)->format('d-m-Y H:i')
+          : null;
+
+          $dateStr = $po->po_date
+          ? \Illuminate\Support\Carbon::parse($po->po_date)->format('d-m-y')
+          : '—';
           @endphp
           <tr>
             <td class="center">{{ $rowNoStart + $loop->index }}</td>
@@ -138,17 +229,26 @@
             <td class="right">{{ $fmt0($rowSubtotalInt) }}</td>
             <td class="right">
               @if($kind === 'none')
-                No Tax
+              No Tax
               @else
-                {{ $fmt0($taxInt) }}
+              {{ $fmt0($taxInt) }}
               @endif
             </td>
             <td class="right">{{ $fmt0($rowTotalInt) }}</td>
             <td>
               <span class="{{ $badgeClass }}">{{ $statusText }}</span>
             </td>
-            <td class="right">
-              <a class="table-btn primary" href="{{ route('po.show', $po) }}">Open</a>
+            <td>
+              <a
+                class="table-btn table-btn-light"
+                href="{{ route('po.show', $po) }}"
+                @if($isClosedRow && $closedAt)
+                title="Closed at {{ $closedAt }}"
+                @elseif($isClosedRow)
+                title="Locked purchase order"
+                @endif>
+                {{ $isClosedRow ? 'View (Closed)' : 'Open' }}
+              </a>
             </td>
           </tr>
           @empty

@@ -5,6 +5,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use App\Http\Middleware\AdminMiddleware;
 use App\Http\Middleware\ConsultantReadOnly;
+use App\Http\Middleware\EnsureExpensePeriodOpen;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -18,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
             // keep existing aliases if present (auth, verified, etc.)
             'admin' => AdminMiddleware::class,
             'consultant.readonly' => ConsultantReadOnly::class,
+            'expense.open' => EnsureExpensePeriodOpen::class,
         ]);
 
         // (Optional) you can also adjust groups:
