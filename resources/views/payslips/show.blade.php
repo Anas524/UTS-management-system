@@ -2,29 +2,6 @@
 
 @section('title', 'Payslip - '.$payslip->nama)
 
-@push('head-scripts')
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            corePlugins: {
-                // Important: don't reset your existing CSS
-                preflight: false,
-            },
-            theme: {
-                extend: {
-                    colors: {
-                        utsBlue: '#0f172a',
-                        utsGold: '#f5b91f',
-                    },
-                    borderRadius: {
-                        'xl2': '1.25rem',
-                    },
-                },
-            },
-        }
-    </script>
-@endpush
-
 @section('content')
 @php
 $fmtIDR = fn($n) => 'IDR '.number_format((float) $n, 0, '.', ',');

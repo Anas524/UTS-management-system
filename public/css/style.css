@@ -686,10 +686,6 @@ footer {
     color: var(--uts-blue);
 }
 
-.dash-box-full {
-    grid-column: 1 / -1;   /* span both columns on desktop */
-}
-
 .dash-dl {
     display: grid;
     grid-template-columns: 120px 1fr;
@@ -1146,21 +1142,45 @@ footer {
 .sheet-card {
     width: 100%;
     max-width: 1200px;
-    background: #fff;
-    border: 1px solid #eee;
-    border-radius: 16px;
-    padding: 18px;
-    box-shadow: 0 18px 40px rgba(1, 48, 90, .12);
     position: relative;
+    border-radius: 20px;
+    padding: 18px;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(148, 163, 184, 0.25); /* softer slate border */
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.18);
+    overflow: hidden; /* so the glow doesn't leak outside */
 }
 
+/* glow layer */
 .sheet-card::before {
     content: "";
     position: absolute;
-    inset: 0;
-    border-radius: 16px;
+    inset: -1px;                 /* cover border nicely */
+    border-radius: inherit;
     pointer-events: none;
-    background: linear-gradient(180deg, rgba(242, 181, 13, .20), transparent 35%);
+
+    background:
+        radial-gradient(
+            circle at -10% -20%,
+            #e2d1c3,
+            transparent 55%
+        ),
+        linear-gradient(
+            180deg,
+            #fdfbfb 0%,
+            #e2d1c3 30%,
+            transparent 75%
+        );
+    opacity: 0.9;
+    z-index: 0;
+    /* background-image: linear-gradient(120deg, #fdfbfb 0%, #ebedee 100%); */
+    /* background-image: linear-gradient(135deg, #fdfcfb 0%, #e2d1c3 100%); */
+}
+
+/* keep all inside content sharp above the glow */
+.sheet-card > * {
+    position: relative;
+    z-index: 1;
 }
 
 /* Header */
@@ -1471,6 +1491,8 @@ footer {
     border: 1.5px solid #e5e7eb;
     border-radius: 10px;
     font-size: 15px;
+    /* Newly added */
+    width: 100%;
 }
 
 
@@ -1939,7 +1961,7 @@ footer {
 }
 
 /* add the ▼ arrow */
-.sort-trigger::after {
+/* .sort-trigger::after {
     content: "";
     position: absolute;
     right: 12px;
@@ -1951,8 +1973,7 @@ footer {
     border-left: 5px solid transparent;
     border-right: 5px solid transparent;
     border-top: 6px solid #555;
-    /* arrow color */
-}
+} */
 
 .sort-dropdown.open .sort-trigger::after {
     border-top: none;
@@ -3778,15 +3799,96 @@ footer {
     overflow: hidden;
 }
 
-.font-plus {
+.font-plus, .font-plus p {
     font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto;
 }
 
-.pay-page a {
+.pay-page a, .doc-hub, .text-dec-none a {
     text-decoration: none;
 }
 
 .pay-page a:hover,
 .pay-page a:focus {
     text-decoration: none;
+}
+
+/* Dashboard hero gradient – stable, independent of Tailwind config */
+.dashboard-hero {
+    /* main gradient */
+    background: linear-gradient(
+        90deg,
+        #0f172a 0%,   /* deep navy (left) */
+        #10223d 35%,  /* mid navy */
+        #0b3252 65%,  /* blue */
+        #0ea5e9 100%  /* sky blue (right) */
+    );
+
+    /* optional subtle glow similar to before */
+    position: relative;
+}
+
+.bg-utsGold {
+    background-color: #f5b91f !important;
+    color: #0f172a;
+}
+
+/* for login page*/
+
+body.login-page {
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* for expanse sheet Fix widths inside glassy modal */
+.modal-card .field-row input,
+.modal-card .field-row select {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+/* Prevent inner horizontal scrollbar in the modal body */
+.modal-card {
+    overflow-x: hidden;
+}
+
+.expense-modal-card {
+    max-height: none;      /* don’t clamp the height */
+    overflow: visible;     /* no internal scrollbar, children can overflow */
+}
+
+/* Month spinner – stay inside the card */
+#modalCreate .month-spinner {
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+/* Arrow buttons – no border/background */
+#modalCreate .month-arrow {
+    border: none;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    height: 12px;
+    width: 16px;
+    cursor: pointer;
+    color: #64748b; /* slate-500 */
+}
+
+#modalCreate .month-arrow:hover {
+    color: #0ea5e9; /* sky-500 */
+}
+
+/* wrapper around the trigger + menu */
+.exp-sort-wrapper {
+    position: relative;
+}
+
+.exp-sort-wrapper .exp-sort-menu {
+    display: none;
+    z-index: 40; /* inside toolbar which is z-30, so OK */
+}
+
+.exp-sort-wrapper.open .exp-sort-menu {
+    display: block;
 }

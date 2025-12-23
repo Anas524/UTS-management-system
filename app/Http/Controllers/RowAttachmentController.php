@@ -12,6 +12,7 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use iio\libmergepdf\Merger;
 use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use ZipArchive;
 
 class RowAttachmentController extends Controller
 {
@@ -24,14 +25,16 @@ class RowAttachmentController extends Controller
 
         $this->authorize('download', $row);
 
-        $atts = $row->attachments()->latest()->get()->map(function ($a) {
+        $atts = $row->attachments()->latest()->get()->map(function ($a) use ($sheet, $row) {
             return [
-                'id'   => $a->id,
-                'name' => $a->original_name,
-                'size' => $a->size,
-                'mime' => $a->mime,
-                'view' => route('attachments.preview', $a),
-                'download' => route('attachments.download', $a),
+                'id'          => $a->id,
+                'name'        => $a->original_name,
+                'size'        => $a->size,
+                'mime'        => $a->mime,
+                'view'        => route('attachments.preview', $a),
+                'download'    => route('attachments.download', $a),
+                'delete_url'  => route('attachments.destroy', [$sheet, $row->id, $a->id]),
+                'uploaded_at' => optional($a->created_at)->format('d M Y H:i'),
             ];
         });
 
@@ -135,60 +138,39 @@ class RowAttachmentController extends Controller
         $this->authorize('download', $row);
 
         $attachments = $row->attachments()->get();
+
         if ($attachments->isEmpty()) {
-            return back()->with('status', 'No attachments to bundle.');
+            return back()->with('status', 'No attachments to download.');
         }
 
-        $tempPdfs = [];
+        // Create a temporary ZIP
+        $zip = new ZipArchive();
+        $zipPath = storage_path('app/temp/' . Str::uuid() . '.zip');
+
+        if (!is_dir(dirname($zipPath))) {
+            mkdir(dirname($zipPath), 0775, true);
+        }
+
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            return back()->with('status', 'Could not create ZIP file.');
+        }
 
         foreach ($attachments as $att) {
             $full = Storage::disk($att->disk)->path($att->path);
-            $mime = $att->mime ?? mime_content_type($full);
-            $title = $att->original_name;
+            $name = $att->original_name ?: basename($att->path);
 
-            // If already a PDF, use as-is
-            if (str_starts_with($mime, 'application/pdf')) {
-                $tempPdfs[] = $full;
-                continue;
-            }
-
-            // If image/* -> render image page
-            if (str_starts_with($mime, 'image/')) {
-                $tempPdfs[] = $this->makeTempPdfForImage($full, $title);
-                continue;
-            }
-
-            // If text/* -> render text preview page
-            if (str_starts_with($mime, 'text/')) {
-                $tempPdfs[] = $this->makeTempPdfForText($full, $title);
-                continue;
-            }
-
-            // Other mime types (docx/xlsx/zip/etc) -> placeholder page
-            $tempPdfs[] = $this->makeTempPdfPlaceholder($title, $mime);
-        }
-
-        // Merge all pages
-        $merger = new Merger();
-        foreach ($tempPdfs as $p) {
-            $merger->addFile($p);
-        }
-        $merged = $merger->merge();
-
-        // Clean up temp files we created (not the originals)
-        foreach ($tempPdfs as $p) {
-            if (!in_array($p, $attachments->map(fn($a) => Storage::disk($a->disk)->path($a->path))->all())) {
-                @unlink($p);
+            // Only add file if it actually exists on disk
+            if (is_file($full)) {
+                $zip->addFile($full, $name);
             }
         }
+
+        $zip->close();
 
         $sheetLabel = \Carbon\Carbon::create($sheet->period_year, $sheet->period_month, 1)->format('F Y');
-        $filename = "Row {$row->id} Attachments - {$sheetLabel}.pdf";
+        $filename = "Row {$row->id} Attachments - {$sheetLabel}.zip";
 
-        return response($merged, 200, [
-            'Content-Type' => 'application/pdf',
-            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
-        ]);
+        return response()->download($zipPath, $filename)->deleteFileAfterSend(true);
     }
 
     // --- helpers to generate temp pdf pages ---

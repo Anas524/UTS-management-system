@@ -5,11 +5,15 @@ use App\Http\Controllers\HomeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\AdminController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DocumentHubAttachmentController;
+use App\Http\Controllers\DocumentHubController;
 use App\Http\Controllers\ExpenseSheetController;
 use App\Http\Controllers\PayslipController;
 use App\Http\Controllers\POAttachmentController;
 use App\Http\Controllers\PurchaseOrderController;
 use App\Http\Controllers\RowAttachmentController;
+use App\Http\Controllers\StockLedgerAttachmentController;
+use App\Http\Controllers\StockLedgerController;
 
 Route::get('/', [HomeController::class, 'index'])->name('home');
 
@@ -131,4 +135,81 @@ Route::middleware(['auth', 'consultant.readonly'])->scopeBindings()->group(funct
 
     Route::get('/payslips/{payslip}/pdf', [PayslipController::class, 'exportPdf'])
         ->name('payslips.pdf');
+
+
+    // Document Hub folder view (path-based)
+    Route::get('/document-hub/folder/{folder}', [DocumentHubController::class, 'folder'])
+        ->name('dh.folder')
+        ->where('folder', '.*'); // allow spaces, slashes, etc.
+
+    // Document Hub main
+    Route::get('/document-hub', [DocumentHubController::class, 'index'])->name('dh.index');
+    Route::post('/document-hub', [DocumentHubController::class, 'store'])->name('dh.store');
+    Route::get('/document-hub/{entry}', [DocumentHubController::class, 'show'])->name('dh.show');
+    Route::put('/document-hub/{entry}', [DocumentHubController::class, 'update'])->name('dh.update');
+    Route::delete('/document-hub/{entry}', [DocumentHubController::class, 'destroy'])->name('dh.destroy');
+
+    // Attachments
+    Route::get('/document-hub/{entry}/attachments', [DocumentHubAttachmentController::class, 'index'])
+        ->name('dh.attachments.index');
+
+    Route::post('/document-hub/{entry}/attachments', [DocumentHubAttachmentController::class, 'store'])
+        ->name('dh.attachments.store');
+
+    Route::get('/document-hub/{entry}/attachments/{attachment}', [DocumentHubAttachmentController::class, 'show'])
+        ->name('dh.attachments.show');
+
+    Route::delete('/document-hub/{entry}/attachments/{attachment}', [DocumentHubAttachmentController::class, 'destroy'])
+        ->name('dh.attachments.destroy');
+
+    Route::get('/document-hub/{entry}/attachments-download-all', [DocumentHubAttachmentController::class, 'downloadAll'])
+        ->name('dh.attachments.downloadAll');
+
+    Route::get('/document-hub/{entry}/attachments/{attachment}/download', [DocumentHubAttachmentController::class, 'download'])
+        ->name('dh.attachments.download');
+
+
+    // Stock Ledger summary screen for 
+    // Inventory list (index)
+    Route::get('/stock-ledger', [StockLedgerController::class, 'index'])
+        ->name('sl.index');
+
+    // Create a new Inventory (from modal on index)
+    Route::post('/stock-ledger/inventories', [StockLedgerController::class, 'storeInventory'])
+        ->name('sl.inventories.store');
+
+    // Ledger for a specific inventory
+    Route::get('/stock-ledger/{inventory}', [StockLedgerController::class, 'show'])
+        ->name('sl.show');
+
+    // INVENTORY DELETE (WHOLE FOLDER)
+    Route::delete('/stock-ledger/inventories/{inventory}', [StockLedgerController::class, 'destroyInventory'])
+        ->name('sl.inventories.destroy');
+
+    // Row APIs (scoped to that inventory)
+    Route::prefix('/stock-ledger/{inventory}')->group(function () {
+        Route::post('/rows', [StockLedgerController::class, 'store'])
+            ->name('sl.rows.store');
+
+        Route::put('/rows/{entry}', [StockLedgerController::class, 'update'])
+            ->name('sl.rows.update');
+
+        Route::delete('/rows/{entry}', [StockLedgerController::class, 'destroyRow'])
+            ->name('sl.rows.destroy');
+    });
+
+    Route::prefix('stock-ledger/{inventory}/rows/{entry}/attachments')
+        ->name('sl.attachments.')
+        ->group(function () {
+            Route::get('/', [StockLedgerAttachmentController::class, 'index'])
+                ->name('index');
+            Route::post('/', [StockLedgerAttachmentController::class, 'store'])
+                ->name('store');
+            Route::get('{attachment}/download', [StockLedgerAttachmentController::class, 'download'])
+                ->name('download');
+            Route::delete('{attachment}', [StockLedgerAttachmentController::class, 'destroy'])
+                ->name('destroy');
+            Route::get('download-all', [StockLedgerAttachmentController::class, 'downloadAll'])
+                ->name('downloadAll');
+        });
 });

@@ -2,29 +2,6 @@
 
 @section('title', 'Payslips')
 
-@push('head-scripts')
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            corePlugins: {
-                // Important: don't reset your existing CSS
-                preflight: false,
-            },
-            theme: {
-                extend: {
-                    colors: {
-                        utsBlue: '#0f172a',
-                        utsGold: '#f5b91f',
-                    },
-                    borderRadius: {
-                        'xl2': '1.25rem',
-                    },
-                },
-            },
-        }
-    </script>
-@endpush
-
 @section('content')
 <div class="font-plus sheet-wrap py-10 pay-page">
     <div class="max-w-5xl mx-auto space-y-6">
