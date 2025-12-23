@@ -208,7 +208,8 @@ $roleLabel = $user->is_admin ? 'Admin' : ($role === 'consultant' ? 'Consultant' 
                 @if(auth()->id() !== $u->id)
                 <form method="POST"
                   action="{{ route('admin.users.role', $u) }}"
-                  class="inline-flex items-center gap-2">
+                  class="inline-flex items-center gap-2 user-role-form"
+                  data-original-role="{{ $uRole }}">
                   @csrf
                   @method('PATCH')
 
@@ -241,11 +242,41 @@ $roleLabel = $user->is_admin ? 'Admin' : ($role === 'consultant' ? 'Consultant' 
                     </div>
                   </div>
 
-                  <button
-                    class="table-btn primary inline-flex items-center rounded-full bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800"
-                    type="submit">
-                    Update
-                  </button>
+                  <div class="inline-flex items-center gap-2">
+                    <button
+                      class="table-btn primary role-update-btn hidden inline-flex items-center rounded-full bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800"
+                      type="submit">
+                      Update
+                    </button>
+
+                    {{-- Delete --}}
+                    <button
+                      type="button"
+                      class="del-btn group inline-flex items-center overflow-hidden rounded-full border border-rose-200 bg-rose-50 text-rose-700
+                              transition-all duration-200 ease-out hover:bg-rose-600 hover:text-white hover:border-rose-600 cursor-pointer"
+                      data-del-user
+                      data-del-name="{{ $u->name }}"
+                      data-del-action="{{ route('admin.users.destroy', $u) }}"
+                      title="Delete user">
+
+                      {{-- icon --}}
+                      <span
+                        class="flex h-7 w-7 items-center justify-center text-rose-600 group-hover:text-white transition-colors cursor-pointer">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5"
+                          viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                          <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M4 7h16M9 7V4h6v3M9 11v6M15 11v6M6 7l1 13h10l1-13" />
+                        </svg>
+                      </span>
+
+                      {{-- label (hidden until hover) --}}
+                      <span
+                        class="del-label max-w-0 overflow-hidden whitespace-nowrap text-[11px] font-semibold
+                                transition-all duration-200 ease-out group-hover:max-w-[60px] group-hover:pr-3">
+                        Delete
+                      </span>
+                    </button>
+                  </div>
                 </form>
                 @else
                 <span class="text-[11px] text-slate-400">You</span>
@@ -277,6 +308,49 @@ $roleLabel = $user->is_admin ? 'Admin' : ($role === 'consultant' ? 'Consultant' 
     </div>
 
   </div>
+
+  {{-- Delete confirmation modal --}}
+  <div id="deleteUserModal" class="fixed inset-0 z-[90] hidden">
+    <div class="absolute inset-0 bg-slate-900/50 backdrop-blur-sm"></div>
+
+    <div class="relative mx-auto mt-24 w-[92%] max-w-md rounded-2xl border border-slate-200 bg-white shadow-xl">
+      <div class="p-5">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-semibold text-slate-900">Delete user?</h3>
+            <p class="mt-1 text-[11px] text-slate-500">
+              This will permanently remove <span class="font-semibold text-slate-700" id="duName">this user</span>.
+            </p>
+          </div>
+          <button type="button" id="duCloseX"
+            class="rounded-full p-1 text-slate-400 hover:bg-slate-50 hover:text-slate-700">
+            ✕
+          </button>
+        </div>
+
+        <div class="mt-4 rounded-xl border border-rose-100 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">
+          This action cannot be undone.
+        </div>
+
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <button type="button" id="duCancel"
+            class="inline-flex items-center rounded-full border border-slate-200 bg-white px-4 py-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-50">
+            Cancel
+          </button>
+
+          <form id="deleteUserForm" method="POST" action="#">
+            @csrf
+            @method('DELETE')
+            <button type="submit" id="duConfirm"
+              class="inline-flex items-center rounded-full bg-rose-600 px-4 py-2 text-[11px] font-semibold text-white hover:bg-rose-700">
+              Delete
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </section>
 
 @push('scripts')
@@ -339,6 +413,18 @@ $roleLabel = $user->is_admin ? 'Admin' : ($role === 'consultant' ? 'Consultant' 
       $picker.find('.rp-btn').attr('aria-expanded', 'false');
     }
 
+    function syncUpdateButton($form) {
+      const original = $form.data('original-role');
+      const current = $form.find('input[name="role"]').val();
+      const $btn = $form.find('.role-update-btn');
+
+      if (current && current !== original) {
+        $btn.removeClass('hidden');
+      } else {
+        $btn.addClass('hidden');
+      }
+    }
+
     // Toggle
     $(document).on('click', '[data-role-picker] .rp-btn', function(e) {
       e.preventDefault();
@@ -362,8 +448,11 @@ $roleLabel = $user->is_admin ? 'Admin' : ($role === 'consultant' ? 'Consultant' 
       $item.attr('aria-selected', 'true');
       $item.find('.rp-check').removeClass('opacity-0');
 
-      $picker.find('.rp-label').text($.trim($item.text()));
+      $picker.find('.rp-label').text($item.find('span').first().text());
       $picker.closest('form').find('input[name="role"]').val(value);
+
+      const $form = $picker.closest('form');
+      syncUpdateButton($form);
 
       closePicker($picker);
     });
@@ -388,6 +477,49 @@ $roleLabel = $user->is_admin ? 'Admin' : ($role === 'consultant' ? 'Consultant' 
         });
       }
     });
+
+    // --- Delete user modal ---
+    function openDeleteModal(name, actionUrl) {
+      $('#duName').text(name);
+      $('#deleteUserForm').attr('action', actionUrl);
+      $('#deleteUserModal').removeClass('hidden');
+    }
+
+    function closeDeleteModal() {
+      $('#deleteUserModal').addClass('hidden');
+      $('#deleteUserForm').attr('action', '#');
+    }
+
+    $(document).on('click', '[data-del-user]', function() {
+      const name = $(this).data('del-name');
+      const action = $(this).data('del-action');
+      openDeleteModal(name, action);
+    });
+
+    $('#duCancel, #duCloseX').on('click', function() {
+      closeDeleteModal();
+    });
+
+    // close on backdrop click
+    $('#deleteUserModal').on('click', function(e) {
+      if ($(e.target).closest('.max-w-md').length === 0) closeDeleteModal();
+    });
+
+    // Esc
+    $(document).on('keydown', function(e) {
+      if (e.key === 'Escape') closeDeleteModal();
+    });
+
+    // prevent double submit + show small loading state
+    $('#deleteUserForm').on('submit', function() {
+      const $btn = $('#duConfirm');
+      $btn.prop('disabled', true).addClass('opacity-70 cursor-not-allowed').text('Deleting…');
+    });
+
+    $('.user-role-form').each(function() {
+      syncUpdateButton($(this));
+    });
+
   });
 </script>
 @endpush

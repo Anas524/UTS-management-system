@@ -14,15 +14,15 @@ class AdminController extends Controller
 
         // Count admins using either role=admin OR legacy is_admin=1
         $adminsCount      = User::where('role', 'admin')
-                                ->orWhere('is_admin', 1)
-                                ->count();
+            ->orWhere('is_admin', 1)
+            ->count();
 
         // Optional: show consultants too (add a card in Blade if you want)
         $consultantsCount = User::where('role', 'consultant')->count();
 
         $recentUsers = User::latest()
             ->take(5)
-            ->get(['id','name','email','created_at','role','is_admin']);
+            ->get(['id', 'name', 'email', 'created_at', 'role', 'is_admin']);
 
         return view('admin.index', compact(
             'totalUsers',
@@ -36,16 +36,16 @@ class AdminController extends Controller
     {
         $q = trim((string) $request->get('q'));
         $users = User::when($q, function ($query) use ($q) {
-                        $query->where(function($qq) use ($q){
-                            $qq->where('name','like',"%{$q}%")
-                               ->orWhere('email','like',"%{$q}%");
-                        });
-                  })
-                  ->orderByDesc('created_at')
-                  ->paginate(10)
-                  ->withQueryString();
+            $query->where(function ($qq) use ($q) {
+                $qq->where('name', 'like', "%{$q}%")
+                    ->orWhere('email', 'like', "%{$q}%");
+            });
+        })
+            ->orderByDesc('created_at')
+            ->paginate(10)
+            ->withQueryString();
 
-        return view('admin.users', compact('users','q'));
+        return view('admin.users', compact('users', 'q'));
     }
 
     public function updateRole(Request $request, User $user)
@@ -65,12 +65,12 @@ class AdminController extends Controller
             $user->is_admin = $data['role'] === 'admin' ? 1 : 0; // keep legacy flag in sync
             $user->save();
 
-            return back()->with('status', 'Role updated to '.ucfirst($data['role']).'.');
+            return back()->with('status', 'Role updated to ' . ucfirst($data['role']) . '.');
         }
 
         // Legacy path (old forms still posting is_admin)
         $data = $request->validate([
-            'is_admin' => ['required','boolean'],
+            'is_admin' => ['required', 'boolean'],
         ]);
 
         $user->is_admin = $request->boolean('is_admin');
@@ -81,5 +81,25 @@ class AdminController extends Controller
         $user->save();
 
         return back()->with('status', 'Role updated.');
+    }
+
+    public function destroy(User $user)
+    {
+        $me = Auth::user(); // no red underline
+
+        abort_unless($me && $me->is_admin, 403);
+
+        if ($me->id === $user->id) {
+            return back()->withErrors(['You cannot delete your own account.']);
+        }
+
+        // optional safety (recommended)
+        if ($user->is_admin) {
+            return back()->withErrors(['You cannot delete an admin account.']);
+        }
+
+        $user->delete();
+
+        return back()->with('status', 'User deleted successfully.');
     }
 }

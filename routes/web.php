@@ -211,5 +211,8 @@ Route::middleware(['auth', 'consultant.readonly'])->scopeBindings()->group(funct
                 ->name('destroy');
             Route::get('download-all', [StockLedgerAttachmentController::class, 'downloadAll'])
                 ->name('downloadAll');
-        });
+    });
+
+    Route::delete('/admin/users/{user}', [AdminController::class, 'destroy'])
+        ->name('admin.users.destroy');
 });
